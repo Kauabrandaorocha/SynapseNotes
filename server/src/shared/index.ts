@@ -1,3 +1,4 @@
+export * from './env.ts';
 export * from './config/env.ts';
 export * from './errors/app-error.ts';
 export * from './logger/logger.ts';

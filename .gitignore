@@ -1,0 +1,29 @@
+# Dependências
+node_modules/
+
+# Builds e outputs
+dist/
+dist-ssr/
+*.local
+
+# Variáveis de ambiente com segredos
+.env
+.env.*.local
+!.env.example
+
+# Uploads locais de mídia
+uploads/
+
+# Logs e diagnósticos
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Sistema e IDE
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

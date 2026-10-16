@@ -85,54 +85,24 @@ export function useAudioRecorder() {
     }
   }, [selectedDeviceId]);
 
-  const checkPermissionState = useCallback(async () => {
-    if (typeof window === 'undefined') return;
 
-    if (!window.isSecureContext && window.location.hostname !== 'localhost') {
-      setPermissionStatus('unsupported');
-      setError('Gravação requer conexão segura (HTTPS).');
-      setErrorType('insecure_context');
-      return;
-    }
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setPermissionStatus('unsupported');
-      setError('Seu navegador não possui suporte à API de gravação de áudio.');
-      setErrorType('unsupported');
-      return;
-    }
-
-    try {
-      if ('permissions' in navigator && navigator.permissions.query) {
-        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-        setPermissionStatus(result.state as 'prompt' | 'granted' | 'denied');
-        result.onchange = () => {
-          setPermissionStatus(result.state as 'prompt' | 'granted' | 'denied');
-          if (result.state === 'granted') {
-            setError(null);
-            setErrorType(null);
-            refreshDevices();
-          }
-        };
-      }
-    } catch {
-      // Permission query might not be supported for microphone in some browsers
-    }
-  }, [refreshDevices]);
-
+  // Limpeza de recursos e timers ao desmontar o hook
   useEffect(() => {
-    checkPermissionState();
-    refreshDevices();
-
-    const onFocus = () => {
-      checkPermissionState();
-      refreshDevices();
-    };
-    window.addEventListener('focus', onFocus);
     return () => {
-      window.removeEventListener('focus', onFocus);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
+      }
     };
-  }, [checkPermissionState, refreshDevices]);
+  }, []);
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
     setIsCheckingPermission(true);
@@ -299,23 +269,24 @@ export function useAudioRecorder() {
         setError(
           isIframe
             ? 'Acesso ao microfone foi negado na visualização incorporada. Abra em uma nova aba para gravar.'
-            : 'Permissão de microfone negada. Clique no cadeado da barra de navegação para autorizar.',
+            : 'Permissão de acesso ao microfone foi negada no navegador. Permita o uso nas configurações para iniciar a gravação.',
         );
-      } else if (name === 'NotFoundError') {
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
         setErrorType('device_not_found');
-        setError('Nenhum microfone encontrado.');
-      } else if (name === 'NotReadableError') {
+        setError('Nenhum microfone encontrado. Conecte um microfone e tente novamente.');
+      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
         setErrorType('in_use');
-        setError('O microfone já está em uso por outro programa.');
+        setError('O microfone já está em uso por outro programa ou aplicativo.');
       } else {
         setErrorType('unknown');
-        setError('Não foi possível iniciar a gravação de áudio.');
+        setError('Não foi possível acessar o microfone para iniciar a gravação.');
       }
       return;
     }
 
     audioStreamRef.current = stream;
     setPermissionStatus('granted');
+    refreshDevices();
     startLevelMeter(stream);
 
     // Seleciona o melhor tipo MIME suportado
@@ -390,7 +361,7 @@ export function useAudioRecorder() {
       setError('Falha ao instanciar o gravador de áudio.');
       setErrorType('unknown');
     }
-  }, [selectedDeviceId, isIframe, audioUrl, duration]);
+  }, [selectedDeviceId, isIframe, audioUrl, duration, refreshDevices]);
 
   const stopRecording = useCallback(() => {
     if (timerRef.current) {

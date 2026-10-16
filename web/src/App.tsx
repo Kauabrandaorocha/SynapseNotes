@@ -108,7 +108,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabType>('notes');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [selectedSourceType, setSelectedSourceType] = useState<string | null>(null);
 
   // Modals state
@@ -424,7 +424,24 @@ export default function App() {
     }
   };
 
-  // Filtered Notes
+  // Tag Filter Toggle and Clear using Set
+  const handleToggleTag = useCallback((tagName: string) => {
+    setSelectedTags((prevSet) => {
+      const nextSet = new Set(prevSet);
+      if (nextSet.has(tagName)) {
+        nextSet.delete(tagName);
+      } else {
+        nextSet.add(tagName);
+      }
+      return nextSet;
+    });
+  }, []);
+
+  const handleClearTags = useCallback(() => {
+    setSelectedTags(new Set());
+  }, []);
+
+  // Filtered Notes with Set-based OR tag logic
   const filteredNotes = useMemo(() => {
     return notes.filter((n) => {
       const matchesSearch =
@@ -434,13 +451,14 @@ export default function App() {
         (n.summary && n.summary.toLowerCase().includes(searchQuery.toLowerCase()));
 
       const matchesTag =
-        !selectedTag || n.tags.some((t) => t.name.toLowerCase() === selectedTag.toLowerCase());
+        selectedTags.size === 0 ||
+        n.tags.some((t) => selectedTags.has(t.name));
 
       const matchesSource = !selectedSourceType || n.sourceType === selectedSourceType;
 
       return matchesSearch && matchesTag && matchesSource;
     });
-  }, [notes, searchQuery, selectedTag, selectedSourceType]);
+  }, [notes, searchQuery, selectedTags, selectedSourceType]);
 
   // Grouped tasks
   const focusTodayTasks = useMemo(
@@ -680,23 +698,25 @@ export default function App() {
                   <span className="text-[11px] text-[var(--text-muted)] font-medium mr-1 flex items-center gap-1">
                     <TagIcon className="h-3 w-3" /> Tags:
                   </span>
-                  {selectedTag && (
+                  {selectedTags.size > 0 && (
                     <button
-                      onClick={() => setSelectedTag(null)}
+                      onClick={handleClearTags}
                       className="text-[11px] px-2.5 py-0.5 rounded-[var(--radius-xs)] font-medium flex items-center gap-1.5 transition-all bg-red-800 text-white border border-red-800 hover:bg-red-900 dark:bg-red-950/80 dark:text-white dark:border-red-800/60 dark:hover:bg-red-900/60 shadow-xs cursor-pointer shrink-0"
-                      title="Limpar filtro aplicado e exibir todas as notas"
+                      title="Limpar filtros de tags aplicados e exibir todas as notas"
                     >
                       <RotateCcw className="h-3 w-3 shrink-0 opacity-90 text-white" />
-                      <span className="text-white font-medium">Limpar Filtro</span>
+                      <span className="text-white font-medium">
+                        Limpar {selectedTags.size > 1 ? `(${selectedTags.size})` : 'Filtro'}
+                      </span>
                       <span className="text-xs font-bold leading-none text-white/90">×</span>
                     </button>
                   )}
                   {tags.map((tag) => {
-                    const isSelected = selectedTag?.toLowerCase() === tag.name.toLowerCase();
+                    const isSelected = selectedTags.has(tag.name);
                     return (
                       <button
                         key={tag.id}
-                        onClick={() => setSelectedTag(isSelected ? null : tag.name)}
+                        onClick={() => handleToggleTag(tag.name)}
                         className={`text-[11px] px-2.5 py-0.5 rounded-[var(--radius-xs)] transition-all truncate max-w-[140px] font-medium border cursor-pointer ${
                           isSelected
                             ? 'bg-amber-700 text-amber-50 border-amber-700 hover:bg-amber-800 dark:bg-amber-800 dark:text-amber-100 dark:border-amber-700/80 dark:hover:bg-amber-700/80 shadow-xs'
@@ -722,7 +742,7 @@ export default function App() {
               <EmptyState
                 title="Nenhuma nota encontrada"
                 description={
-                  searchQuery || selectedTag || selectedSourceType
+                  searchQuery || selectedTags.size > 0 || selectedSourceType
                     ? 'Tente ajustar os filtros ou o termo de busca para encontrar suas notas.'
                     : 'Você ainda não registrou pensamentos. Crie sua primeira nota ou grave um áudio para a IA analisar!'
                 }
@@ -1450,7 +1470,7 @@ export default function App() {
                       ? 'bg-[var(--success)] animate-pulse'
                       : audioRecorder.permissionStatus === 'denied'
                       ? 'bg-[var(--error)]'
-                      : 'bg-[var(--warning)]'
+                      : 'bg-[var(--accent)]'
                   }`}
                 />
                 <span className="text-xs font-semibold text-[var(--text-primary)] truncate">
@@ -1458,7 +1478,7 @@ export default function App() {
                     ? 'Microfone Pronto e Autorizado'
                     : audioRecorder.permissionStatus === 'denied'
                     ? 'Acesso ao Microfone Negado'
-                    : 'Permissão Pendente'}
+                    : 'Pronto para Gravar (permissão sob demanda)'}
                 </span>
               </div>
 
@@ -1474,7 +1494,7 @@ export default function App() {
                   {audioRecorder.isCheckingPermission ? (
                     <Spinner size="sm" />
                   ) : (
-                    'Solicitar Permissão'
+                    'Testar Microfone'
                   )}
                 </Button>
               )}
