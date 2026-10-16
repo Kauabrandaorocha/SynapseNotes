@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@/*": ["./*"],
+      "@web/*": ["./web/src/*"],
+      "@server/*": ["./server/src/*"],
+      "@shared/*": ["./shared/*"],
+      "@contracts/*": ["./shared/contracts/*"]
+    }
+  },
+  "include": ["web/**/*", "server/**/*", "shared/**/*", "server.ts", "vite.config.ts"]
+}

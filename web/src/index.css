@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+@layer base {
+  :root {
+    /* Base Canvas & Surface (Warm Neutrals — Papel Natural & Caderno) */
+    --background: #fbfaf8;
+    --foreground: #1c1a17;
+    --surface: #ffffff;
+    --surface-hover: #f5f3ee;
+    --surface-subtle: #faf8f5;
+
+    /* Bordas e Contornos Sutis de 1px */
+    --border: #e6e2db;
+    --border-hover: #d2ccc2;
+    --border-subtle: #efece6;
+
+    /* Acento Único: Terracota Artesanal Equilibrado */
+    --accent: #c85a32;
+    --accent-hover: #b44f2b;
+    --accent-subtle: #faece6;
+    --accent-foreground: #ffffff;
+
+    /* Texto & Tipografia */
+    --text-primary: #1c1a17;
+    --text-secondary: #5a554c;
+    --text-muted: #847e73;
+
+    /* Cores Semânticas de Estado com Contraste AA */
+    --success: #2e6930;
+    --success-subtle: #edf5ed;
+    --warning: #9e6400;
+    --warning-subtle: #fcf4e6;
+    --error: #b82c2c;
+    --error-subtle: #fbeeed;
+
+    /* Tipografia Neo-Grotesca Moderna e Humana */
+    --font-sans: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-serif: 'Newsreader', Georgia, serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    /* Escala de Raios Não-Pill */
+    --radius-xs: 3px;
+    --radius-sm: 5px;
+    --radius-md: 7px;
+    --radius-lg: 10px;
+
+    /* Sombras Mínimas */
+    --shadow-subtle: 0 1px 2px rgba(28, 26, 23, 0.04);
+    --shadow-popover: 0 4px 16px -2px rgba(28, 26, 23, 0.08);
+  }
+
+  .dark {
+    /* Base Canvas & Surface (Warm Dark — Obsidiana Quente) */
+    --background: #141311;
+    --foreground: #f2efe9;
+    --surface: #1c1b18;
+    --surface-hover: #24221f;
+    --surface-subtle: #181715;
+
+    /* Bordas Sutis Escuras */
+    --border: #2e2b26;
+    --border-hover: #3d3a33;
+    --border-subtle: #24221d;
+
+    /* Acento Terracota no Modo Escuro */
+    --accent: #d96d44;
+    --accent-hover: #e57c54;
+    --accent-subtle: #2a1b14;
+    --accent-foreground: #ffffff;
+
+    /* Texto no Modo Escuro */
+    --text-primary: #f2efe9;
+    --text-secondary: #b5afa4;
+    --text-muted: #7d776c;
+
+    /* Estados no Modo Escuro */
+    --success: #4fa153;
+    --success-subtle: #162417;
+    --warning: #d9962a;
+    --warning-subtle: #2b200e;
+    --error: #df4a4a;
+    --error-subtle: #2d1616;
+
+    --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-popover: 0 8px 24px -4px rgba(0, 0, 0, 0.45);
+  }
+
+  * {
+    border-color: var(--border);
+    box-sizing: border-box;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-sans);
+    color: var(--foreground);
+    background-color: var(--background);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    width: 100%;
+  }
+
+  /* Prevenção universal de overflow de texto e caixas */
+  p, h1, h2, h3, h4, h5, h6, span, a, label, li {
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  /* Ocultar botão nativo de limpar busca em navegadores WebKit/Chromium */
+  input[type="search"]::-webkit-search-cancel-button,
+  input[type="search"]::-webkit-search-decoration,
+  input[type="search"]::-webkit-search-results-button,
+  input[type="search"]::-webkit-search-results-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+    display: none;
+  }
+}

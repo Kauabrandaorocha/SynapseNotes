@@ -1,0 +1,6 @@
+{
+  "name": "SynapseNotes",
+  "description": "App de notas inteligente para estudantes e pesquisadores: pensamentos, áudios e links organizados por IA.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
