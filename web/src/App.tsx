@@ -6,7 +6,6 @@ import {
   Search,
   Sparkles,
   CheckCircle2,
-  Circle,
   Trash2,
   ExternalLink,
   Radio,
@@ -24,6 +23,13 @@ import {
   RotateCcw,
   Copy,
   X,
+  Calendar,
+  CheckCheck,
+  CheckSquare,
+  Square,
+  ArrowUpDown,
+  ArrowDown,
+  ArrowUp,
 } from 'lucide-react';
 import { api, type ApiNote, type ApiTask, type ApiTag, type ApiRelation } from './services/api.ts';
 import { useAudioRecorder } from './hooks/use-audio-recorder.ts';
@@ -110,6 +116,38 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [selectedSourceType, setSelectedSourceType] = useState<string | null>(null);
+
+  // Histórico de timestamps de conclusão de tarefas (persistido em localStorage)
+  const [completionHistory, setCompletionHistory] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('synapsenotes_task_completions');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Seleção de tarefas via Checkbox para conclusão explícita via botão
+  const [selectedTaskIdsForCompletion, setSelectedTaskIdsForCompletion] = useState<Set<string>>(new Set());
+  const [isCompletingBatch, setIsCompletingBatch] = useState(false);
+
+  // Ordenação das Tarefas Concluídas ('desc' = Mais recentes, 'asc' = Mais antigas)
+  const [completedTasksSortOrder, setCompletedTasksSortOrder] = useState<'desc' | 'asc'>(() => {
+    try {
+      return (localStorage.getItem('synapsenotes_completed_sort_order') as 'desc' | 'asc') || 'desc';
+    } catch {
+      return 'desc';
+    }
+  });
+
+  const handleToggleCompletedTasksSortOrder = useCallback((order: 'desc' | 'asc') => {
+    setCompletedTasksSortOrder(order);
+    try {
+      localStorage.setItem('synapsenotes_completed_sort_order', order);
+    } catch {
+      // Ignora erros de quota/armazenamento local
+    }
+  }, []);
 
   // Modals state
   const [isNewNoteModalOpen, setIsNewNoteModalOpen] = useState(false);
@@ -394,14 +432,90 @@ export default function App() {
     }
   };
 
-  const handleToggleTask = async (task: ApiTask) => {
+  // Seleção e desmarcação de tarefas via Checkbox nas listas ativas
+  const handleToggleSelectTask = useCallback((taskId: string) => {
+    setSelectedTaskIdsForCompletion((prevSet) => {
+      const nextSet = new Set(prevSet);
+      if (nextSet.has(taskId)) {
+        nextSet.delete(taskId);
+      } else {
+        nextSet.add(taskId);
+      }
+      return nextSet;
+    });
+  }, []);
+
+  const handleClearTaskSelection = useCallback(() => {
+    setSelectedTaskIdsForCompletion(new Set());
+  }, []);
+
+  // Conclusão explícita em lote via Botão "Concluir Tarefas"
+  const handleCompleteSelectedTasks = async () => {
+    if (selectedTaskIdsForCompletion.size === 0) return;
+
+    setIsCompletingBatch(true);
+    const taskIdsToComplete = Array.from(selectedTaskIdsForCompletion);
+    const nowIso = new Date().toISOString();
+
+    try {
+      const updatedTasks = await Promise.all(
+        taskIdsToComplete.map((id) =>
+          api.updateTask(id, { isCompleted: true })
+        )
+      );
+
+      // Registra o carimbo temporal exato de finalização (dia/mês/ano e hora:minuto:segundo)
+      setCompletionHistory((prev) => {
+        const next = { ...prev };
+        taskIdsToComplete.forEach((id) => {
+          next[id] = nowIso;
+        });
+        try {
+          localStorage.setItem('synapsenotes_task_completions', JSON.stringify(next));
+        } catch {
+          // ignore localStorage error
+        }
+        return next;
+      });
+
+      const updatedMap = new Map(updatedTasks.map((t) => [t.id, t]));
+      setTasks((prev) =>
+        prev.map((t) => (updatedMap.has(t.id) ? updatedMap.get(t.id)! : t))
+      );
+
+      setSelectedTaskIdsForCompletion(new Set());
+      showToast(
+        `${taskIdsToComplete.length} ${
+          taskIdsToComplete.length === 1 ? 'tarefa concluída' : 'tarefas concluídas'
+        } com registro de data e horário!`
+      );
+    } catch (err: any) {
+      showToast(`Erro ao concluir tarefas: ${err?.message || 'Erro inesperado'}`);
+    } finally {
+      setIsCompletingBatch(false);
+    }
+  };
+
+  // Reabertura de tarefa a partir da seção de concluídas
+  const handleReopenTask = async (task: ApiTask) => {
     try {
       const updated = await api.updateTask(task.id, {
-        isCompleted: !task.isCompleted,
+        isCompleted: false,
       });
+
+      setCompletionHistory((prev) => {
+        const next = { ...prev };
+        delete next[task.id];
+        try {
+          localStorage.setItem('synapsenotes_task_completions', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
       setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+      showToast('Tarefa reaberta e movida para a lista ativa.');
     } catch (err: any) {
-      showToast(`Erro ao atualizar tarefa: ${err.message}`);
+      showToast(`Erro ao reabrir tarefa: ${err?.message || 'Erro inesperado'}`);
     }
   };
 
@@ -419,6 +533,21 @@ export default function App() {
     try {
       await api.deleteTask(id);
       setTasks((prev) => prev.filter((t) => t.id !== id));
+      setSelectedTaskIdsForCompletion((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setCompletionHistory((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        try {
+          localStorage.setItem('synapsenotes_task_completions', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
     } catch (err: any) {
       showToast(`Erro ao excluir tarefa: ${err.message}`);
     }
@@ -460,19 +589,86 @@ export default function App() {
     });
   }, [notes, searchQuery, selectedTags, selectedSourceType]);
 
-  // Grouped tasks
+  // Helper para obter o timestamp ISO de conclusão exato
+  const getTaskCompletedAt = useCallback(
+    (task: ApiTask): string => {
+      if (completionHistory[task.id]) {
+        return completionHistory[task.id];
+      }
+      return (task as any).updatedAt || (task as any).createdAt || new Date().toISOString();
+    },
+    [completionHistory],
+  );
+
+  // Helper para formatar data (DD/MM/AAAA) e horário (HH:mm:ss)
+  const formatCompletionFull = (isoString: string): string => {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return 'Data não registrada';
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const seconds = date.getSeconds().toString().padStart(2, '0');
+    return `${day}/${month}/${year} às ${hours}:${minutes}:${seconds}`;
+  };
+
+  // Tarefas Ativas (separadas estritamente das concluídas)
   const focusTodayTasks = useMemo(
-    () => tasks.filter((t) => t.priorityBucket === 'focus_today'),
+    () => tasks.filter((t) => t.priorityBucket === 'focus_today' && !t.isCompleted),
     [tasks],
   );
   const upcomingTasks = useMemo(
-    () => tasks.filter((t) => t.priorityBucket === 'upcoming'),
+    () => tasks.filter((t) => t.priorityBucket === 'upcoming' && !t.isCompleted),
     [tasks],
   );
   const somedayTasks = useMemo(
-    () => tasks.filter((t) => t.priorityBucket === 'someday'),
+    () => tasks.filter((t) => t.priorityBucket === 'someday' && !t.isCompleted),
     [tasks],
   );
+
+  // Tarefas Concluídas com Agrupamento Temporal e Ordenação (Mais recentes / Mais antigas)
+  const completedTaskGroups = useMemo(() => {
+    const completedTasks = tasks.filter((t) => t.isCompleted);
+
+    completedTasks.sort((a, b) => {
+      const timeA = new Date(getTaskCompletedAt(a)).getTime();
+      const timeB = new Date(getTaskCompletedAt(b)).getTime();
+      return completedTasksSortOrder === 'desc' ? timeB - timeA : timeA - timeB;
+    });
+
+    const today = new Date();
+    const todayKey = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = `${yesterday.getDate().toString().padStart(2, '0')}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getFullYear()}`;
+
+    const map = new Map<string, ApiTask[]>();
+
+    completedTasks.forEach((task) => {
+      const iso = getTaskCompletedAt(task);
+      const d = new Date(iso);
+      const dateKey = `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+      if (!map.has(dateKey)) {
+        map.set(dateKey, []);
+      }
+      map.get(dateKey)!.push(task);
+    });
+
+    const groups: { dateKey: string; label: string; tasks: ApiTask[] }[] = [];
+    map.forEach((taskList, dateKey) => {
+      let label = `Finalizadas em ${dateKey}`;
+      if (dateKey === todayKey) {
+        label = `Hoje (${dateKey})`;
+      } else if (dateKey === yesterdayKey) {
+        label = `Ontem (${dateKey})`;
+      }
+      groups.push({ dateKey, label, tasks: taskList });
+    });
+
+    return groups;
+  }, [tasks, getTaskCompletedAt, completedTasksSortOrder]);
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col w-full min-w-0 overflow-x-hidden antialiased">
@@ -834,7 +1030,7 @@ export default function App() {
                                   </span>
                                 )}
                                 <span>·</span>
-                                <span className="font-mono text-[10px] truncate">
+                                <span className="font-sans font-medium text-[10px] truncate">
                                   {new Date(note.createdAt).toLocaleDateString('pt-BR')}
                                 </span>
                               </div>
@@ -849,7 +1045,7 @@ export default function App() {
                                 </span>
                               ) : note.tasksCount > 0 ? (
                                 <span
-                                  className="inline-flex items-center gap-1 text-[10px] text-[var(--text-secondary)] shrink-0"
+                                  className="inline-flex items-center gap-1 text-[10px] text-[var(--text-secondary)] shrink-0 font-sans font-medium"
                                   title={`${note.tasksCount} tarefas extraídas`}
                                 >
                                   <CheckCircle2 className="h-2.5 w-2.5 text-[var(--success)]" /> {note.tasksCount} tarefas
@@ -860,7 +1056,7 @@ export default function App() {
                             {/* Title with Word Break Protection */}
                             <CardTitle
                               style={{ fontFamily: 'Plus Jakarta Sans, var(--font-sans)' }}
-                              className="text-sm sm:text-base font-semibold tracking-tight leading-snug break-words line-clamp-2 text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors font-sans"
+                              className="text-sm sm:text-base font-bold tracking-tight leading-snug break-words line-clamp-2 text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors font-sans"
                             >
                               {cleanNoteTitle(note.title)}
                             </CardTitle>
@@ -888,7 +1084,7 @@ export default function App() {
                                 {note.tags.slice(0, 3).map((tag) => (
                                   <span
                                     key={tag.id}
-                                    className="text-[10px] font-mono text-[var(--text-muted)] bg-[var(--surface-hover)] px-1.5 py-0.5 rounded-[var(--radius-xs)] truncate max-w-[100px]"
+                                    className="text-[10px] font-sans font-medium text-[var(--text-muted)] bg-[var(--surface-hover)] px-1.5 py-0.5 rounded-[var(--radius-xs)] truncate max-w-[100px]"
                                   >
                                     {tag.name}
                                   </span>
@@ -942,14 +1138,14 @@ export default function App() {
             <div className="bg-[var(--surface)] p-4 sm:p-5 rounded-[var(--radius-md)] border border-[var(--border)] shadow-[var(--shadow-subtle)] space-y-4 min-w-0">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 min-w-0">
                 <div>
-                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                  <h2 className="text-base sm:text-lg font-bold tracking-tight text-[var(--text-primary)]">
                     Gerenciador de Tarefas Cognitivas
                   </h2>
                   <p className="text-xs text-[var(--text-secondary)]">
                     Tarefas extraídas de suas notas pela IA e organizadas por prioridade.
                   </p>
                 </div>
-                <div className="text-xs text-[var(--text-muted)] font-mono">
+                <div className="text-xs text-[var(--text-muted)] font-sans font-medium">
                   {tasks.filter((t) => t.isCompleted).length} de {tasks.length} concluídas
                 </div>
               </div>
@@ -988,85 +1184,149 @@ export default function App() {
               )}
             </div>
 
+            {/* Barra de Ação para Conclusão de Tarefas Selecionadas */}
+            {selectedTaskIdsForCompletion.size > 0 && (
+              <div className="p-3 sm:p-4 rounded-[var(--radius-md)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] border border-[rgba(249,115,22,0.3)] dark:border-[rgba(249,115,22,0.4)] shadow-xs flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1">
+                <div className="flex items-center gap-3">
+                  <div className="h-8 w-8 rounded-full bg-[var(--accent)] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                    {selectedTaskIdsForCompletion.size}
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5">
+                      <CheckSquare className="h-3.5 w-3.5 text-[var(--accent)]" />
+                      <span>
+                        {selectedTaskIdsForCompletion.size === 1
+                          ? '1 tarefa selecionada para conclusão'
+                          : `${selectedTaskIdsForCompletion.size} tarefas selecionadas para conclusão`}
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      Clique no botão ao lado para confirmar a conclusão e migrar para o histórico temporal.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearTaskSelection}
+                    disabled={isCompletingBatch}
+                    className="text-xs h-8 cursor-pointer border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    Desmarcar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleCompleteSelectedTasks}
+                    disabled={isCompletingBatch}
+                    className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium text-xs h-8 gap-1.5 shadow-xs cursor-pointer"
+                  >
+                    {isCompletingBatch ? (
+                      <Spinner size="sm" />
+                    ) : (
+                      <CheckCheck className="h-4 w-4" />
+                    )}
+                    <span>
+                      {selectedTaskIdsForCompletion.size === 1
+                        ? 'Concluir Tarefa'
+                        : `Concluir ${selectedTaskIdsForCompletion.size} Tarefas`}
+                    </span>
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {/* Grid dos 3 Buckets de Tarefas */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5 w-full min-w-0">
               {/* Bucket 1: Foco Hoje (Max 3) */}
               <div className="bg-[var(--surface)] rounded-[var(--radius-md)] border border-[var(--border)] p-4 space-y-3 min-w-0">
                 <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--accent)] flex items-center gap-1.5">
-                    <Radio className="h-3 w-3" /> Foco Hoje
+                  <h3 className="text-xs sm:text-sm font-bold tracking-tight text-[var(--accent)] flex items-center gap-1.5">
+                    <Radio className="h-3.5 w-3.5" /> Foco Hoje
                   </h3>
-                  <span className="text-[11px] font-mono text-[var(--text-muted)]">
-                    {focusTodayTasks.filter((t) => !t.isCompleted).length}/3
+                  <span className="text-xs font-sans font-medium text-[var(--text-muted)]">
+                    {focusTodayTasks.length}/3
                   </span>
                 </div>
 
                 {focusTodayTasks.length === 0 ? (
                   <p className="text-xs text-[var(--text-muted)] italic py-4 text-center">
-                    Nenhuma tarefa prioritária definida para hoje.
+                    Nenhuma tarefa prioritária ativa para hoje.
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {focusTodayTasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className={`p-2.5 rounded-[var(--radius-sm)] border transition-all flex items-start gap-2.5 min-w-0 ${
-                          task.isCompleted
-                            ? 'bg-[var(--surface-subtle)] border-[var(--border-subtle)] opacity-60'
-                            : 'bg-[var(--surface)] border-[var(--border)] shadow-xs'
-                        }`}
-                      >
-                        <button
-                          onClick={() => handleToggleTask(task)}
-                          className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--success)] shrink-0"
+                    {focusTodayTasks.map((task) => {
+                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                      return (
+                        <div
+                          key={task.id}
+                          onClick={() => handleToggleSelectTask(task.id)}
+                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                            isSelected
+                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                          }`}
                         >
-                          {task.isCompleted ? (
-                            <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
-                          ) : (
-                            <Circle className="h-4 w-4" />
-                          )}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <p
-                            className={`text-xs break-words leading-tight ${
-                              task.isCompleted
-                                ? 'line-through text-[var(--text-muted)]'
-                                : 'text-[var(--text-primary)] font-medium'
-                            }`}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleSelectTask(task.id);
+                            }}
+                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
                           >
-                            {task.content}
-                          </p>
-                          {task.noteTitle && (
-                            <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                              <span className="truncate">Ref: {task.noteTitle}</span>
-                              {(() => {
-                                const parentNote = notes.find((n) => n.id === task.noteId);
-                                const taskUrl = getNoteLink(parentNote);
-                                if (!taskUrl) return null;
-                                return (
-                                  <a
-                                    href={taskUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                    title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                  >
-                                    <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                    <span>Ver artigo</span>
-                                  </a>
-                                );
-                              })()}
-                            </div>
-                          )}
+                            {isSelected ? (
+                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                            ) : (
+                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                            )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs break-words leading-tight text-[var(--text-primary)] font-medium">
+                              {task.content}
+                            </p>
+                            {task.noteTitle && (
+                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                <span className="truncate">Ref: {task.noteTitle}</span>
+                                {(() => {
+                                  const parentNote = notes.find((n) => n.id === task.noteId);
+                                  const taskUrl = getNoteLink(parentNote);
+                                  if (!taskUrl) return null;
+                                  return (
+                                    <a
+                                      href={taskUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                    >
+                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                      <span>Ver artigo</span>
+                                    </a>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTask(task.id);
+                            }}
+                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
+                            title="Excluir tarefa"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleDeleteTask(task.id)}
-                          className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1074,93 +1334,106 @@ export default function App() {
               {/* Bucket 2: Próximas */}
               <div className="bg-[var(--surface)] rounded-[var(--radius-md)] border border-[var(--border)] p-4 space-y-3 min-w-0">
                 <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)] flex items-center gap-1.5">
-                    <ListTodo className="h-3 w-3" /> Próximas
+                  <h3 className="text-xs sm:text-sm font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-1.5">
+                    <ListTodo className="h-3.5 w-3.5" /> Próximas
                   </h3>
-                  <span className="text-[11px] font-mono text-[var(--text-muted)]">
-                    {upcomingTasks.filter((t) => !t.isCompleted).length}
+                  <span className="text-xs font-sans font-medium text-[var(--text-muted)]">
+                    {upcomingTasks.length}
                   </span>
                 </div>
 
                 {upcomingTasks.length === 0 ? (
                   <p className="text-xs text-[var(--text-muted)] italic py-4 text-center">
-                    Nenhuma tarefa em fila.
+                    Nenhuma tarefa ativa em fila.
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {upcomingTasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className={`p-2.5 rounded-[var(--radius-sm)] border transition-all flex items-start gap-2.5 min-w-0 ${
-                          task.isCompleted
-                            ? 'bg-[var(--surface-subtle)] border-[var(--border-subtle)] opacity-60'
-                            : 'bg-[var(--surface)] border-[var(--border)] shadow-xs'
-                        }`}
-                      >
-                        <button
-                          onClick={() => handleToggleTask(task)}
-                          className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--success)] shrink-0"
+                    {upcomingTasks.map((task) => {
+                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                      return (
+                        <div
+                          key={task.id}
+                          onClick={() => handleToggleSelectTask(task.id)}
+                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                            isSelected
+                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                          }`}
                         >
-                          {task.isCompleted ? (
-                            <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
-                          ) : (
-                            <Circle className="h-4 w-4" />
-                          )}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <p
-                            className={`text-xs break-words leading-tight ${
-                              task.isCompleted
-                                ? 'line-through text-[var(--text-muted)]'
-                                : 'text-[var(--text-primary)]'
-                            }`}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleSelectTask(task.id);
+                            }}
+                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
                           >
-                            {task.content}
-                          </p>
-                          {task.noteTitle && (
-                            <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                              <span className="truncate">Ref: {task.noteTitle}</span>
-                              {(() => {
-                                const parentNote = notes.find((n) => n.id === task.noteId);
-                                const taskUrl = getNoteLink(parentNote);
-                                if (!taskUrl) return null;
-                                return (
-                                  <a
-                                    href={taskUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                    title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                  >
-                                    <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                    <span>Ver artigo</span>
-                                  </a>
-                                );
-                              })()}
-                            </div>
-                          )}
-                          {task.isSuggested && (
-                            <div className="flex items-center gap-1.5 mt-1.5">
-                              <span className="text-[9px] bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 px-1 py-0.2 rounded font-medium">
-                                Sugestão IA
-                              </span>
-                              <button
-                                onClick={() => handleApproveTask(task)}
-                                className="text-[10px] text-[var(--accent)] hover:underline font-medium"
-                              >
-                                Confirmar
-                              </button>
-                            </div>
-                          )}
+                            {isSelected ? (
+                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                            ) : (
+                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                            )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
+                              {task.content}
+                            </p>
+                            {task.noteTitle && (
+                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                <span className="truncate">Ref: {task.noteTitle}</span>
+                                {(() => {
+                                  const parentNote = notes.find((n) => n.id === task.noteId);
+                                  const taskUrl = getNoteLink(parentNote);
+                                  if (!taskUrl) return null;
+                                  return (
+                                    <a
+                                      href={taskUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                    >
+                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                      <span>Ver artigo</span>
+                                    </a>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                            {task.isSuggested && (
+                              <div className="flex items-center gap-1.5 mt-1.5">
+                                <span className="text-[9px] bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 px-1 py-0.2 rounded font-medium">
+                                  Sugestão IA
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleApproveTask(task);
+                                  }}
+                                  className="text-[10px] text-[var(--accent)] hover:underline font-medium"
+                                >
+                                  Confirmar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTask(task.id);
+                            }}
+                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
+                            title="Excluir tarefa"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleDeleteTask(task.id)}
-                          className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1168,11 +1441,11 @@ export default function App() {
               {/* Bucket 3: Algum Dia */}
               <div className="bg-[var(--surface)] rounded-[var(--radius-md)] border border-[var(--border)] p-4 space-y-3 min-w-0">
                 <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
-                    <Clock className="h-3 w-3" /> Algum Dia
+                  <h3 className="text-xs sm:text-sm font-bold tracking-tight text-[var(--text-muted)] flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5" /> Algum Dia
                   </h3>
-                  <span className="text-[11px] font-mono text-[var(--text-muted)]">
-                    {somedayTasks.filter((t) => !t.isCompleted).length}
+                  <span className="text-xs font-sans font-medium text-[var(--text-muted)]">
+                    {somedayTasks.length}
                   </span>
                 </div>
 
@@ -1182,69 +1455,217 @@ export default function App() {
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {somedayTasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className={`p-2.5 rounded-[var(--radius-sm)] border transition-all flex items-start gap-2.5 min-w-0 ${
-                          task.isCompleted
-                            ? 'bg-[var(--surface-subtle)] border-[var(--border-subtle)] opacity-60'
-                            : 'bg-[var(--surface)] border-[var(--border)] shadow-xs'
-                        }`}
-                      >
-                        <button
-                          onClick={() => handleToggleTask(task)}
-                          className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--success)] shrink-0"
+                    {somedayTasks.map((task) => {
+                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                      return (
+                        <div
+                          key={task.id}
+                          onClick={() => handleToggleSelectTask(task.id)}
+                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                            isSelected
+                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                          }`}
                         >
-                          {task.isCompleted ? (
-                            <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
-                          ) : (
-                            <Circle className="h-4 w-4" />
-                          )}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <p
-                            className={`text-xs break-words leading-tight ${
-                              task.isCompleted
-                                ? 'line-through text-[var(--text-muted)]'
-                                : 'text-[var(--text-primary)]'
-                            }`}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleSelectTask(task.id);
+                            }}
+                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
                           >
-                            {task.content}
-                          </p>
-                          {task.noteTitle && (
-                            <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                              <span className="truncate">Ref: {task.noteTitle}</span>
-                              {(() => {
-                                const parentNote = notes.find((n) => n.id === task.noteId);
-                                const taskUrl = getNoteLink(parentNote);
-                                if (!taskUrl) return null;
-                                return (
-                                  <a
-                                    href={taskUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                    title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                  >
-                                    <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                    <span>Ver artigo</span>
-                                  </a>
-                                );
-                              })()}
-                            </div>
-                          )}
+                            {isSelected ? (
+                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                            ) : (
+                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                            )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
+                              {task.content}
+                            </p>
+                            {task.noteTitle && (
+                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                <span className="truncate">Ref: {task.noteTitle}</span>
+                                {(() => {
+                                  const parentNote = notes.find((n) => n.id === task.noteId);
+                                  const taskUrl = getNoteLink(parentNote);
+                                  if (!taskUrl) return null;
+                                  return (
+                                    <a
+                                      href={taskUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                    >
+                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                      <span>Ver artigo</span>
+                                    </a>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTask(task.id);
+                            }}
+                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
+                            title="Excluir tarefa"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleDeleteTask(task.id)}
-                          className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* ===================================================================== */}
+            {/* Seção Dedicada de Tarefas Concluídas com Agrupamento Temporal */}
+            {/* ===================================================================== */}
+            <div className="bg-[var(--surface)] rounded-[var(--radius-md)] border border-[var(--border)] p-4 sm:p-5 space-y-4 min-w-0 shadow-xs">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCheck className="h-4 w-4 text-[var(--success)]" />
+                  <h3 className="text-sm sm:text-base font-bold tracking-tight text-[var(--text-primary)]">
+                    Tarefas Concluídas
+                  </h3>
+                  <span className="text-xs font-sans font-medium px-2 py-0.5 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] text-[var(--text-secondary)]">
+                    {tasks.filter((t) => t.isCompleted).length}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {/* Controle de Ordenação: Mais recentes / Mais antigas */}
+                  <div
+                    className="flex items-center gap-1 bg-[var(--surface-subtle)] p-0.5 rounded-[var(--radius-sm)] border border-[var(--border)]"
+                    role="group"
+                    aria-label="Ordenação de tarefas concluídas"
+                  >
+                    <span className="text-[10px] text-[var(--text-muted)] font-medium pl-1.5 pr-0.5 hidden sm:inline-flex items-center gap-1">
+                      <ArrowUpDown className="h-2.5 w-2.5 opacity-70" /> Ordem:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleCompletedTasksSortOrder('desc')}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-[var(--radius-xs)] text-xs font-sans font-medium transition-all cursor-pointer ${
+                        completedTasksSortOrder === 'desc'
+                          ? 'bg-[var(--surface)] text-[var(--accent)] font-semibold shadow-xs border border-[var(--border)]'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-transparent'
+                      }`}
+                      title="Exibir tarefas mais recentes primeiro"
+                    >
+                      <ArrowDown className="h-3 w-3" />
+                      <span>Mais recentes</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleCompletedTasksSortOrder('asc')}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-[var(--radius-xs)] text-xs font-sans font-medium transition-all cursor-pointer ${
+                        completedTasksSortOrder === 'asc'
+                          ? 'bg-[var(--surface)] text-[var(--accent)] font-semibold shadow-xs border border-[var(--border)]'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] border border-transparent'
+                      }`}
+                      title="Exibir tarefas mais antigas primeiro"
+                    >
+                      <ArrowUp className="h-3 w-3" />
+                      <span>Mais antigas</span>
+                    </button>
+                  </div>
+
+                  <span className="text-xs text-[var(--text-muted)] hidden lg:flex items-center gap-1 font-sans">
+                    <Clock className="h-3 w-3 text-[var(--accent)]" /> Histórico temporal
+                  </span>
+                </div>
+              </div>
+
+              {completedTaskGroups.length === 0 ? (
+                <div className="py-8 flex flex-col items-center justify-center text-center gap-2">
+                  <div className="h-10 w-10 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] flex items-center justify-center text-[var(--text-muted)]">
+                    <CheckCircle2 className="h-5 w-5 opacity-60 text-[var(--success)]" />
+                  </div>
+                  <p className="text-xs text-[var(--text-primary)] font-medium">
+                    Nenhuma tarefa concluída ainda.
+                  </p>
+                  <p className="text-[11px] text-[var(--text-muted)] max-w-sm">
+                    Ao finalizar tarefas nas listas acima ("Foco Hoje" ou "Próximas"), elas serão arquivadas aqui com registro temporal de dia/mês/ano e hora:minuto:segundo.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4 min-w-0">
+                  {completedTaskGroups.map((group) => (
+                    <div key={group.dateKey} className="space-y-2.5 min-w-0">
+                      {/* Cabeçalho do Agrupamento Temporal */}
+                      <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] bg-[var(--surface-subtle)] px-3 py-1.5 rounded-[var(--radius-xs)] border border-[var(--border-subtle)]">
+                        <div className="flex items-center gap-1.5 font-bold tracking-tight">
+                          <Calendar className="h-3.5 w-3.5 text-[var(--accent)]" />
+                          <span>{group.label}</span>
+                        </div>
+                        <span className="text-xs text-[var(--text-muted)] font-sans font-medium">
+                          {group.tasks.length} {group.tasks.length === 1 ? 'tarefa finalizada' : 'tarefas finalizadas'}
+                        </span>
+                      </div>
+
+                      {/* Lista de Tarefas do Grupo Temporal */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 min-w-0">
+                        {group.tasks.map((task) => {
+                          const completedIso = getTaskCompletedAt(task);
+                          return (
+                            <div
+                              key={task.id}
+                              className="p-3 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface)] hover:bg-[var(--surface-hover)] transition-all flex items-start justify-between gap-2.5 min-w-0 group"
+                            >
+                              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleReopenTask(task)}
+                                  className="mt-0.5 text-[var(--success)] hover:text-[var(--text-muted)] shrink-0 transition-colors cursor-pointer"
+                                  title="Clique para reabrir tarefa e mover de volta à lista ativa"
+                                >
+                                  <CheckCircle2 className="h-4 w-4" />
+                                </button>
+                                <div className="flex-1 min-w-0 space-y-1.5">
+                                  <p className="text-xs line-through text-[var(--text-muted)] break-words leading-tight">
+                                    {task.content}
+                                  </p>
+                                  <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                                    {/* Registro temporal exato: Dia/Mês/Ano e Hora:Minuto:Segundo com peso leve (font-light) e tamanho discreto */}
+                                    <span className="inline-flex items-center gap-1.5 font-sans font-light text-[11px] text-[var(--success)] bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 px-2 py-0.5 rounded-[var(--radius-xs)] tracking-normal">
+                                      <Clock className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                                      <span>Concluída em {formatCompletionFull(completedIso)}</span>
+                                    </span>
+                                    {task.noteTitle && (
+                                      <span className="truncate max-w-[130px] text-[var(--text-muted)] font-sans text-[11px]">
+                                        Ref: {task.noteTitle}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleDeleteTask(task.id)}
+                                className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1 opacity-80 group-hover:opacity-100 transition-opacity"
+                                title="Excluir tarefa definitivamente"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -1255,7 +1676,7 @@ export default function App() {
         {activeTab === 'relations' && (
           <section className="space-y-6 w-full min-w-0">
             <div className="bg-[var(--surface)] p-4 sm:p-5 rounded-[var(--radius-md)] border border-[var(--border)] shadow-[var(--shadow-subtle)] space-y-2 min-w-0">
-              <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
+              <h2 className="text-base sm:text-lg font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2">
                 <Network className="h-4 w-4 text-[var(--accent)]" /> Grafo de Correlações Semânticas
               </h2>
               <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
@@ -1297,7 +1718,7 @@ export default function App() {
                       <span className="truncate">
                         {n.tags.length > 0 ? n.tags.map((t) => t.name).join(' · ') : 'Sem tags'}
                       </span>
-                      <span className="font-mono">{n.tasksCount} tarefas</span>
+                      <span className="font-sans font-medium text-[10px]">{n.tasksCount} tarefas</span>
                     </div>
                   </Card>
                 ))}
@@ -1698,14 +2119,14 @@ export default function App() {
                         {selectedNote.tags.slice(0, 6).map((t) => (
                           <span
                             key={t.id}
-                            className="inline-flex items-center text-[10px] font-mono bg-[var(--surface-hover)] border border-[var(--border-subtle)] px-1.5 py-0.5 rounded-[var(--radius-xs)] text-[var(--text-secondary)]"
+                            className="inline-flex items-center text-[10px] font-sans font-medium bg-[var(--surface-hover)] border border-[var(--border-subtle)] px-1.5 py-0.5 rounded-[var(--radius-xs)] text-[var(--text-secondary)]"
                           >
                             #{t.name}
                           </span>
                         ))}
                         {selectedNote.tags.length > 6 && (
                           <span
-                            className="inline-flex items-center text-[10px] font-mono text-[var(--text-muted)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] px-1.5 py-0.5 rounded-[var(--radius-xs)]"
+                            className="inline-flex items-center text-[10px] font-sans font-medium text-[var(--text-muted)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] px-1.5 py-0.5 rounded-[var(--radius-xs)]"
                             title={selectedNote.tags.slice(6).map((t) => `#${t.name}`).join(', ')}
                           >
                             +{selectedNote.tags.length - 6}
@@ -2025,7 +2446,7 @@ export default function App() {
       <footer className="border-t border-[var(--border)] bg-[var(--surface)] py-4 text-center text-xs text-[var(--text-muted)] shrink-0">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>© {new Date().getFullYear()} SynapseNotes — Segundo Cérebro com Inteligência Artificial</p>
-          <p className="font-mono text-[11px]">Desenvolvido com Gemini & Express</p>
+          <p className="font-sans font-medium text-[11px]">Desenvolvido com Gemini & Express</p>
         </div>
       </footer>
     </div>
