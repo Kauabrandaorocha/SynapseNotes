@@ -171,14 +171,19 @@ export default function App() {
   const [isSavingAudio, setIsSavingAudio] = useState(false);
   const [audioSaveError, setAudioSaveError] = useState<string | null>(null);
 
-  // Toast / Feedback State
+  // Estado de autenticação e sessão válida ativa
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
+  // Toast / Feedback State (só dispara eventos de interface se houver sessão ativa)
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = useCallback((msg: string) => {
+    // Impede disparos de interface (toast) sem sessão ativa válida
+    if (!isAuthenticated) return;
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
     }, 4000);
-  }, []);
+  }, [isAuthenticated]);
 
   // Navegação entre Landing Page (página inicial pública) e Aplicação do SynapseNotes
   const [currentView, setCurrentView] = useState<'landing' | 'app'>(() => {
@@ -189,19 +194,108 @@ export default function App() {
     }
   });
 
-  const handleEnterApp = useCallback(() => {
+  // Check de autenticação no useEffect:
+  // Impede rigorosamente a exibição de modais ou disparos de eventos de interface caso o usuário não tenha uma sessão válida ativa no sistema
+  useEffect(() => {
+    let isMounted = true;
+
+    const verifyAuthSession = async () => {
+      // Se estiver na landing page, não há sessão ativa na interface da aplicação
+      if (currentView === 'landing') {
+        if (!isMounted) return;
+        setIsAuthenticated(false);
+        setIsNewNoteModalOpen(false);
+        setIsAudioModalOpen(false);
+        setIsImportModalOpen(false);
+        setSelectedNote(null);
+        setIsEditingNote(false);
+        setConfettiTrigger(0);
+        setToastMessage(null);
+        return;
+      }
+
+      // Valida sessão ativa no sistema
+      try {
+        const isValid = await api.checkAuthSession();
+        if (!isMounted) return;
+
+        setIsAuthenticated(isValid);
+
+        // Se o usuário não tiver uma sessão válida ativa, impede a exibição de modais e disparos de eventos de interface
+        if (!isValid) {
+          setIsNewNoteModalOpen(false);
+          setIsAudioModalOpen(false);
+          setIsImportModalOpen(false);
+          setSelectedNote(null);
+          setIsEditingNote(false);
+          setConfettiTrigger(0);
+          setToastMessage(null);
+        }
+      } catch {
+        if (!isMounted) return;
+        setIsAuthenticated(false);
+        setIsNewNoteModalOpen(false);
+        setIsAudioModalOpen(false);
+        setIsImportModalOpen(false);
+        setSelectedNote(null);
+        setIsEditingNote(false);
+        setConfettiTrigger(0);
+        setToastMessage(null);
+      }
+    };
+
+    verifyAuthSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentView]);
+
+  // Efeito de proteção contínua: intercepta qualquer tentativa de exibir modais ou disparar eventos de interface sem sessão válida
+  useEffect(() => {
+    if (!isAuthenticated) {
+      if (isNewNoteModalOpen) setIsNewNoteModalOpen(false);
+      if (isAudioModalOpen) setIsAudioModalOpen(false);
+      if (isImportModalOpen) setIsImportModalOpen(false);
+      if (selectedNote !== null) setSelectedNote(null);
+      if (isEditingNote) setIsEditingNote(false);
+      if (confettiTrigger !== 0) setConfettiTrigger(0);
+      if (toastMessage !== null) setToastMessage(null);
+    }
+  }, [
+    isAuthenticated,
+    isNewNoteModalOpen,
+    isAudioModalOpen,
+    isImportModalOpen,
+    selectedNote,
+    isEditingNote,
+    confettiTrigger,
+    toastMessage,
+  ]);
+
+  const handleEnterApp = useCallback(async () => {
     setCurrentView('app');
-    api.ensureAuthSession();
+    setConfettiTrigger(0);
+    const sessionActive = await api.ensureAuthSession();
+    setIsAuthenticated(sessionActive);
     try {
       localStorage.setItem('synapsenotes_current_view', 'app');
     } catch {
       // Ignora erro de localStorage
     }
-    showToast('Conectado como Administrador (admin@synapsenotes.com)!');
-  }, [showToast]);
+    loadData();
+  }, []);
 
   const handleBackToLanding = useCallback(() => {
     setCurrentView('landing');
+    setIsAuthenticated(false);
+    setIsNewNoteModalOpen(false);
+    setIsAudioModalOpen(false);
+    setIsImportModalOpen(false);
+    setSelectedNote(null);
+    setIsEditingNote(false);
+    setConfettiTrigger(0);
+    setToastMessage(null);
     try {
       localStorage.setItem('synapsenotes_current_view', 'landing');
     } catch {
@@ -214,7 +308,8 @@ export default function App() {
     if (!isPolling) setIsLoading(true);
     try {
       if (!isPolling) {
-        api.ensureAuthSession();
+        const hasSession = await api.ensureAuthSession();
+        setIsAuthenticated(hasSession);
       }
       const [fetchedNotes, fetchedTasks, fetchedTags] = await Promise.all([
         api.getNotes(),
@@ -261,6 +356,7 @@ export default function App() {
 
   // Handle Note Details View
   const handleOpenNote = async (note: ApiNote) => {
+    if (!isAuthenticated) return;
     setSelectedNote(note);
     setIsEditingNote(false);
     setEditTitle(cleanNoteTitle(note.title));
@@ -474,6 +570,7 @@ export default function App() {
 
   // Conclusão explícita em lote via Botão "Concluir Tarefas"
   const handleCompleteSelectedTasks = async () => {
+    if (!isAuthenticated) return;
     if (selectedTaskIdsForCompletion.size === 0) return;
 
     const taskIdsToComplete = Array.from(selectedTaskIdsForCompletion);
@@ -528,6 +625,7 @@ export default function App() {
   // Conclusão imediata de uma tarefa individual com animação de confetes e transição suave
   const handleQuickCompleteTask = useCallback(async (task: ApiTask, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    if (!isAuthenticated) return;
 
     // Dispara exclusivamente o banner comemorativo com Framer Motion (sem poluição de confetes)
     setConfettiTaskCount(1);
@@ -553,7 +651,7 @@ export default function App() {
         return next;
       });
 
-      showToast('Tarefa concluída! Bom trabalho!');
+      showToast('Tarefa concluída!');
     } catch (err: any) {
       showToast(`Erro ao concluir tarefa: ${err?.message || 'Erro inesperado'}`);
     }
@@ -780,7 +878,7 @@ export default function App() {
       <OfflineIndicator />
 
       {/* Toast Notification */}
-      {toastMessage && (
+      {toastMessage && isAuthenticated && (
         <aside
           aria-label="Notificações do sistema"
           className="fixed bottom-4 right-4 z-50 max-w-[90vw] sm:max-w-md bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] shadow-[var(--shadow-popover)] rounded-[var(--radius-md)] p-3 text-xs flex items-center gap-2.5 transition-all"
@@ -1973,7 +2071,7 @@ export default function App() {
       {/* MODAL 1: CRIAR NOVA NOTA (Criação Imediata & Análise em Segundo Plano) */}
       {/* ========================================================================= */}
       <Modal
-        isOpen={isNewNoteModalOpen}
+        isOpen={isNewNoteModalOpen && isAuthenticated}
         onClose={() => setIsNewNoteModalOpen(false)}
         title="Criar Nova Nota"
         description="Salve pensamentos instantaneamente. A inteligência artificial enriquecerá sua nota em segundo plano sem travar a interface."
@@ -2088,7 +2186,7 @@ export default function App() {
       {/* MODAL 2: GRAVAÇÃO DE VOZ COM PERMISSÃO E TRANSCRIÇÃO IA */}
       {/* ========================================================================= */}
       <Modal
-        isOpen={isAudioModalOpen}
+        isOpen={isAudioModalOpen && isAuthenticated}
         onClose={() => {
           audioRecorder.resetRecording();
           setIsAudioModalOpen(false);
@@ -2341,12 +2439,12 @@ export default function App() {
       {/* ========================================================================= */}
       {/* MODAL 3: DETALHES E EDIÇÃO DA NOTA */}
       {/* ========================================================================= */}
-      {selectedNote && (() => {
+      {selectedNote && isAuthenticated && (() => {
         const modalUrl = getNoteLink(selectedNote);
 
         return (
           <Modal
-            isOpen={Boolean(selectedNote)}
+            isOpen={Boolean(selectedNote) && isAuthenticated}
             onClose={() => setSelectedNote(null)}
             title={isEditingNote ? 'Editar Nota' : cleanNoteTitle(selectedNote.title)}
             headerAction={
@@ -2618,7 +2716,7 @@ export default function App() {
                 {/* Raw Content / Transcription */}
                 <div className="space-y-1.5">
                   <h4 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-                    {selectedNote.sourceType === 'audio' ? 'Transcrição de Áudio' : 'Conteúdo Integral'}
+                    {selectedNote.sourceType === 'audio' ? 'Transcrição de Áudio' : 'Descrição'}
                   </h4>
                   <div className="p-3.5 sm:p-4 rounded-[var(--radius-sm)] bg-[var(--surface)] border border-[var(--border)] max-h-60 overflow-y-auto text-xs sm:text-sm leading-relaxed text-[var(--text-primary)] whitespace-pre-wrap break-words">
                     {selectedNote.rawContent || 'Sem conteúdo adicional.'}
@@ -2704,15 +2802,19 @@ export default function App() {
 
       {/* MODAL 4: IMPORTAR NOTAS (TXT, CSV, ÁUDIO) */}
       <ImportNotesModal
-        isOpen={isImportModalOpen}
+        isOpen={isImportModalOpen && isAuthenticated}
         onClose={() => setIsImportModalOpen(false)}
         onSuccess={(msg) => showToast(msg)}
         onRefreshData={loadData}
         onNoteImported={(newNote) => setNotes((prev) => [newNote, ...prev])}
       />
 
-      {/* Animação comemorativa e feedback de conclusão com Framer Motion */}
-      <TaskConfetti triggerKey={confettiTrigger} taskCount={confettiTaskCount} />
+      {/* Feedback de conclusão de tarefas suave via Framer Motion (ativo apenas na aba de tarefas com sessão ativa) */}
+      <TaskConfetti
+        triggerKey={isAuthenticated && activeTab === 'tasks' ? confettiTrigger : 0}
+        taskCount={confettiTaskCount}
+        isActiveTab={isAuthenticated && activeTab === 'tasks'}
+      />
 
       {/* FOOTER */}
       <footer className="border-t border-[var(--border)] bg-[var(--surface)] py-4 text-center text-xs text-[var(--text-muted)] shrink-0">

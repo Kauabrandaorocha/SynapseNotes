@@ -265,6 +265,15 @@ export const api = {
     return request<{ status: string }>('/health');
   },
 
+  checkAuthSession: async (): Promise<boolean> => {
+    try {
+      await request<{ id: string; email: string }>('/auth/me');
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   ensureAuthSession: async (): Promise<boolean> => {
     try {
       await request<{ user: any }>('/auth/session');
