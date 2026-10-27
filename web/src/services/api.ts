@@ -63,6 +63,17 @@ export interface ApiResponse<T> {
   };
 }
 
+/**
+ * Gestão de Autenticação Segura via Cookies HttpOnly
+ * 
+ * Por conformidade estrita de segurança e proteção contra XSS (Cross-Site Scripting),
+ * os tokens JWT NUNCA são persistidos em localStorage ou sessionStorage.
+ * O navegador gerencia o envio transparente do cookie 'accessToken' através de
+ * credentials: 'include' com as diretivas HttpOnly, Secure, SameSite=Lax e Max-Age.
+ */
+export const getAuthToken = (): string | null => null;
+export const setAuthToken = (_token: string | null): void => {};
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `/api${endpoint}`;
   const headers = {
@@ -70,7 +81,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     ...(options.headers || {}),
   };
 
-  // 20s timeout controller to guarantee requests never hang indefinitely
+  // 25s timeout controller to guarantee requests never hang indefinitely
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 25000);
 
@@ -78,6 +89,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     const response = await fetch(url, {
       ...options,
       headers,
+      credentials: 'include', // Envia e recebe cookies HttpOnly automaticamente
       signal: options.signal || controller.signal,
     });
 
@@ -97,9 +109,39 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       throw new Error(errorMsg);
     }
 
+    // Persiste cópia local para garantia de visualização offline
+    if (!options.method || options.method === 'GET') {
+      try {
+        if (endpoint.startsWith('/notes') && !endpoint.includes('/', 7)) {
+          localStorage.setItem('synapse_offline_notes_backup', JSON.stringify(json.data));
+        } else if (endpoint.startsWith('/tasks')) {
+          localStorage.setItem('synapse_offline_tasks_backup', JSON.stringify(json.data));
+        } else if (endpoint.startsWith('/tags')) {
+          localStorage.setItem('synapse_offline_tags_backup', JSON.stringify(json.data));
+        }
+      } catch {}
+    }
+
     return json.data;
   } catch (err: any) {
     clearTimeout(timeoutId);
+
+    // Recupera dados salvos caso a conexão esteja offline
+    if (!options.method || options.method === 'GET') {
+      try {
+        if (endpoint.startsWith('/notes') && !endpoint.includes('/', 7)) {
+          const cached = localStorage.getItem('synapse_offline_notes_backup');
+          if (cached) return JSON.parse(cached);
+        } else if (endpoint.startsWith('/tasks')) {
+          const cached = localStorage.getItem('synapse_offline_tasks_backup');
+          if (cached) return JSON.parse(cached);
+        } else if (endpoint.startsWith('/tags')) {
+          const cached = localStorage.getItem('synapse_offline_tags_backup');
+          if (cached) return JSON.parse(cached);
+        }
+      } catch {}
+    }
+
     if (err.name === 'AbortError') {
       throw new Error('A requisição excedeu o tempo limite. Verifique sua conexão e tente novamente.');
     }
@@ -222,4 +264,63 @@ export const api = {
   getHealth: () => {
     return request<{ status: string }>('/health');
   },
+
+  ensureAuthSession: async (): Promise<boolean> => {
+    try {
+      await request<{ user: any }>('/auth/session');
+      return true;
+    } catch (e) {
+      console.warn('[API] Falha ao obter sessão segura via cookie HttpOnly:', e);
+      return false;
+    }
+  },
+
+  logout: async (): Promise<void> => {
+    try {
+      await request('/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.warn('[API] Falha ao efetuar logout:', e);
+    }
+  },
+
+  /**
+   * Recuperação de áudio protegido via Cookie HttpOnly seguro, convertendo em Blob URL local.
+   * Não expõe rotas internas na UI e mantém controle estrito de propriedade (Ownership).
+   */
+  fetchSecureAudioBlob: async (noteIdOrUrl: string): Promise<string> => {
+    let endpoint: string;
+    if (noteIdOrUrl.startsWith('/api/')) {
+      endpoint = noteIdOrUrl;
+    } else if (noteIdOrUrl.startsWith('/media/')) {
+      endpoint = `/api${noteIdOrUrl}`;
+    } else if (noteIdOrUrl.startsWith('audio-')) {
+      endpoint = `/api/media/${noteIdOrUrl}`;
+    } else {
+      // É o ID da nota
+      endpoint = `/api/notes/${noteIdOrUrl}/audio`;
+    }
+
+    // O navegador transmite automaticamente o cookie HttpOnly seguro 'accessToken'
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Acesso não autorizado: Sessão não autenticada. Faça login para ouvir o áudio.');
+      }
+      if (response.status === 403) {
+        throw new Error('Acesso negado: Você não possui permissão para ouvir este áudio privado.');
+      }
+      if (response.status === 404) {
+        throw new Error('Gravação de áudio não encontrada ou arquivo removido.');
+      }
+      throw new Error(`Falha ao obter áudio privado (HTTP ${response.status}).`);
+    }
+
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  },
 };
+

@@ -138,7 +138,7 @@ export const envSchema = z.object({
   GEMINI_MODEL: z
     .string()
     .min(1, 'GEMINI_MODEL é obrigatório.')
-    .default('gemini-2.0-flash'),
+    .default('gemini-3.5-flash'),
   LLM_DAILY_QUOTA_PER_USER: z
     .string()
     .optional()

@@ -115,6 +115,15 @@ export class DatabaseStore {
       createdAt: new Date().toISOString(),
     });
 
+    const adminUserId = '00000000-0000-0000-0000-000000000001';
+    this.users.push({
+      id: adminUserId,
+      email: 'admin@synapsenotes.com',
+      fullName: 'Admin (Administrador)',
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    });
+
     this.workspaces.push({
       id: defaultWorkspaceId,
       name: 'Caderno de Estudos Acadêmicos',

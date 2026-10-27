@@ -4,7 +4,7 @@ import {
   Plus,
   Mic,
   Search,
-  Sparkles,
+  Brain,
   CheckCircle2,
   Trash2,
   ExternalLink,
@@ -30,6 +30,11 @@ import {
   ArrowUpDown,
   ArrowDown,
   ArrowUp,
+  Github,
+  Linkedin,
+  FileSpreadsheet,
+  Upload,
+  Check,
 } from 'lucide-react';
 import { api, type ApiNote, type ApiTask, type ApiTag, type ApiRelation } from './services/api.ts';
 import { useAudioRecorder } from './hooks/use-audio-recorder.ts';
@@ -41,46 +46,22 @@ import { FormField } from './components/ui/form-field.tsx';
 import { EmptyState } from './components/ui/empty-state.tsx';
 import { Spinner } from './components/ui/spinner.tsx';
 import { Alert } from './components/ui/alert.tsx';
+import { LandingPage } from './components/LandingPage.tsx';
+import { SecureAudioPlayer } from './components/SecureAudioPlayer.tsx';
+import { NoteExportDropdown } from './components/NoteExportDropdown.tsx';
+import { NotesStatsCard } from './components/NotesStatsCard.tsx';
+import { DateRangeFilter, type DateRange } from './components/DateRangeFilter.tsx';
+import { OfflineIndicator } from './components/OfflineIndicator.tsx';
+import { PWAInstallButton } from './components/PWAInstallButton.tsx';
+import { ImportNotesModal } from './components/ImportNotesModal.tsx';
+import { TaskConfetti } from './components/TaskConfetti.tsx';
+import { formatAudioDuration, cleanNoteTitle, getNoteLink } from './utils/noteHelpers.ts';
+import { exportCompletedTasksToCSV } from './utils/exportTasksCSV.ts';
+export { formatAudioDuration, cleanNoteTitle, getNoteLink };
 
 export const MAX_TAGS_PER_NOTE = 6;
 
 type TabType = 'notes' | 'tasks' | 'relations';
-
-export function formatAudioDuration(seconds?: number | null): string {
-  if (seconds === undefined || seconds === null || isNaN(seconds) || seconds <= 0) {
-    return 'Áudio';
-  }
-  const totalSeconds = Math.round(seconds);
-  const mins = Math.floor(totalSeconds / 60);
-  const secs = totalSeconds % 60;
-  if (mins === 0) {
-    return `${secs}s`;
-  }
-  if (secs === 0) {
-    return `${mins}m`;
-  }
-  return `${mins}m ${secs.toString().padStart(2, '0')}s`;
-}
-
-export function getNoteLink(
-  note?: { sourceType?: string; sourceUrl?: string | null; rawContent?: string | null } | null,
-): string | null {
-  if (!note) return null;
-  if (note.sourceUrl && typeof note.sourceUrl === 'string' && note.sourceUrl.trim()) {
-    const trimmed = note.sourceUrl.trim();
-    return trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`;
-  }
-  if (note.rawContent && typeof note.rawContent === 'string') {
-    const match = note.rawContent.trim().match(/https?:\/\/[^\s]+/i);
-    if (match) return match[0];
-  }
-  return null;
-}
-
-export function cleanNoteTitle(title?: string | null): string {
-  if (!title) return '';
-  return title.replace(/^Gravação de Voz\s*—\s*\d{1,2}\/\d{1,2}\/\d{2,4}$/i, 'Gravação de Voz');
-}
 
 export default function App() {
   // Theme state
@@ -116,6 +97,10 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [selectedSourceType, setSelectedSourceType] = useState<string | null>(null);
+  const [dateRange, setDateRange] = useState<DateRange>({
+    startDate: null,
+    endDate: null,
+  });
 
   // Histórico de timestamps de conclusão de tarefas (persistido em localStorage)
   const [completionHistory, setCompletionHistory] = useState<Record<string, string>>(() => {
@@ -152,6 +137,9 @@ export default function App() {
   // Modals state
   const [isNewNoteModalOpen, setIsNewNoteModalOpen] = useState(false);
   const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [confettiTrigger, setConfettiTrigger] = useState(0);
+  const [confettiTaskCount, setConfettiTaskCount] = useState(1);
   const [selectedNote, setSelectedNote] = useState<ApiNote | null>(null);
   const [noteRelations, setNoteRelations] = useState<ApiRelation[]>([]);
   const [isLoadingNoteDetail, setIsLoadingNoteDetail] = useState(false);
@@ -192,10 +180,42 @@ export default function App() {
     }, 4000);
   }, []);
 
+  // Navegação entre Landing Page (página inicial pública) e Aplicação do SynapseNotes
+  const [currentView, setCurrentView] = useState<'landing' | 'app'>(() => {
+    try {
+      return (localStorage.getItem('synapsenotes_current_view') as 'landing' | 'app') || 'landing';
+    } catch {
+      return 'landing';
+    }
+  });
+
+  const handleEnterApp = useCallback(() => {
+    setCurrentView('app');
+    api.ensureAuthSession();
+    try {
+      localStorage.setItem('synapsenotes_current_view', 'app');
+    } catch {
+      // Ignora erro de localStorage
+    }
+    showToast('Conectado como Administrador (admin@synapsenotes.com)!');
+  }, [showToast]);
+
+  const handleBackToLanding = useCallback(() => {
+    setCurrentView('landing');
+    try {
+      localStorage.setItem('synapsenotes_current_view', 'landing');
+    } catch {
+      // Ignora erro de localStorage
+    }
+  }, []);
+
   // Fetch all primary data
   const loadData = useCallback(async (isPolling = false) => {
     if (!isPolling) setIsLoading(true);
     try {
+      if (!isPolling) {
+        api.ensureAuthSession();
+      }
       const [fetchedNotes, fetchedTasks, fetchedTags] = await Promise.all([
         api.getNotes(),
         api.getTasks(),
@@ -245,7 +265,8 @@ export default function App() {
     setIsEditingNote(false);
     setEditTitle(cleanNoteTitle(note.title));
     setEditContent(note.rawContent);
-    setEditSourceUrl(note.sourceUrl || '');
+    // Só preenche editSourceUrl se for uma nota do tipo link externo, nunca áudios ou rotas internas
+    setEditSourceUrl(note.sourceType === 'link' && !note.sourceUrl?.startsWith('/api/') ? note.sourceUrl || '' : '');
     setEditTags(note.tags ? note.tags.map((t) => t.name) : []);
     setNewTagInput('');
     setIsLoadingNoteDetail(true);
@@ -253,8 +274,10 @@ export default function App() {
       const detail = await api.getNote(note.id);
       setSelectedNote(detail.note);
       setNoteRelations(detail.relations);
-      if (detail.note.sourceUrl) {
+      if (detail.note.sourceType === 'link' && detail.note.sourceUrl && !detail.note.sourceUrl.startsWith('/api/')) {
         setEditSourceUrl(detail.note.sourceUrl);
+      } else {
+        setEditSourceUrl('');
       }
       if (detail.note.tags) {
         setEditTags(detail.note.tags.map((t) => t.name));
@@ -398,7 +421,7 @@ export default function App() {
       setAudioNoteTitle('');
       setIsAudioModalOpen(false);
 
-      showToast('Áudio salvo com sucesso! O Gemini está transcrevendo e analisando em segundo plano.');
+      showToast('Áudio salvo com sucesso! A IA está transcrevendo e analisando em segundo plano.');
 
       // Dispara atualização reativa para capturar a transcrição concluída
       loadData(true);
@@ -453,8 +476,14 @@ export default function App() {
   const handleCompleteSelectedTasks = async () => {
     if (selectedTaskIdsForCompletion.size === 0) return;
 
-    setIsCompletingBatch(true);
     const taskIdsToComplete = Array.from(selectedTaskIdsForCompletion);
+    const count = taskIdsToComplete.length;
+
+    // Dispara exclusivamente o banner comemorativo com Framer Motion (sem poluição de confetes)
+    setConfettiTaskCount(count);
+    setConfettiTrigger((prev) => prev + 1);
+
+    setIsCompletingBatch(true);
     const nowIso = new Date().toISOString();
 
     try {
@@ -495,6 +524,40 @@ export default function App() {
       setIsCompletingBatch(false);
     }
   };
+
+  // Conclusão imediata de uma tarefa individual com animação de confetes e transição suave
+  const handleQuickCompleteTask = useCallback(async (task: ApiTask, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+
+    // Dispara exclusivamente o banner comemorativo com Framer Motion (sem poluição de confetes)
+    setConfettiTaskCount(1);
+    setConfettiTrigger((prev) => prev + 1);
+
+    const nowIso = new Date().toISOString();
+    try {
+      const updated = await api.updateTask(task.id, { isCompleted: true });
+
+      setCompletionHistory((prev) => {
+        const next = { ...prev, [task.id]: nowIso };
+        try {
+          localStorage.setItem('synapsenotes_task_completions', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+      setSelectedTaskIdsForCompletion((prev) => {
+        if (!prev.has(task.id)) return prev;
+        const next = new Set(prev);
+        next.delete(task.id);
+        return next;
+      });
+
+      showToast('Tarefa concluída! Bom trabalho!');
+    } catch (err: any) {
+      showToast(`Erro ao concluir tarefa: ${err?.message || 'Erro inesperado'}`);
+    }
+  }, [showToast]);
 
   // Reabertura de tarefa a partir da seção de concluídas
   const handleReopenTask = async (task: ApiTask) => {
@@ -570,7 +633,7 @@ export default function App() {
     setSelectedTags(new Set());
   }, []);
 
-  // Filtered Notes with Set-based OR tag logic
+  // Filtered Notes with Set-based OR tag logic & Date Range Filter
   const filteredNotes = useMemo(() => {
     return notes.filter((n) => {
       const matchesSearch =
@@ -585,9 +648,28 @@ export default function App() {
 
       const matchesSource = !selectedSourceType || n.sourceType === selectedSourceType;
 
-      return matchesSearch && matchesTag && matchesSource;
+      const matchesDate = (() => {
+        if (!dateRange.startDate && !dateRange.endDate) return true;
+        const noteDate = new Date(n.createdAt);
+        const noteTime = noteDate.getTime();
+        if (isNaN(noteTime)) return true;
+
+        if (dateRange.startDate) {
+          const startTime = new Date(`${dateRange.startDate}T00:00:00`).getTime();
+          if (noteTime < startTime) return false;
+        }
+
+        if (dateRange.endDate) {
+          const endTime = new Date(`${dateRange.endDate}T23:59:59.999`).getTime();
+          if (noteTime > endTime) return false;
+        }
+
+        return true;
+      })();
+
+      return matchesSearch && matchesTag && matchesSource && matchesDate;
     });
-  }, [notes, searchQuery, selectedTags, selectedSourceType]);
+  }, [notes, searchQuery, selectedTags, selectedSourceType, dateRange]);
 
   // Helper para obter o timestamp ISO de conclusão exato
   const getTaskCompletedAt = useCallback(
@@ -670,15 +752,40 @@ export default function App() {
     return groups;
   }, [tasks, getTaskCompletedAt, completedTasksSortOrder]);
 
+  // Exportação das tarefas concluídas para arquivo CSV com data e hora exatas
+  const handleExportCompletedTasksCSV = useCallback(() => {
+    const result = exportCompletedTasksToCSV(tasks, getTaskCompletedAt, completedTasksSortOrder);
+    if (result.count === 0) {
+      showToast('Não há tarefas concluídas para exportar.');
+    } else {
+      showToast(
+        `Histórico de ${result.count} ${result.count === 1 ? 'tarefa exportada' : 'tarefas exportadas'} em CSV com sucesso!`
+      );
+    }
+  }, [tasks, getTaskCompletedAt, completedTasksSortOrder, showToast]);
+
+  if (currentView === 'landing') {
+    return (
+      <LandingPage
+        onEnterApp={handleEnterApp}
+        theme={theme}
+        toggleTheme={toggleTheme}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col w-full min-w-0 overflow-x-hidden antialiased">
+      {/* Indicador de Status Offline */}
+      <OfflineIndicator />
+
       {/* Toast Notification */}
       {toastMessage && (
         <aside
           aria-label="Notificações do sistema"
           className="fixed bottom-4 right-4 z-50 max-w-[90vw] sm:max-w-md bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] shadow-[var(--shadow-popover)] rounded-[var(--radius-md)] p-3 text-xs flex items-center gap-2.5 transition-all"
         >
-          <Sparkles className="h-4 w-4 text-[var(--accent)] shrink-0" />
+          <CheckCircle2 className="h-4 w-4 text-[var(--accent)] shrink-0" />
           <p className="flex-1 min-w-0 break-words leading-tight">{toastMessage}</p>
           <Button
             variant="ghost"
@@ -693,63 +800,89 @@ export default function App() {
 
       {/* TOP HEADER: Clean Editorial Bar */}
       <header className="sticky top-0 z-40 w-full border-b border-[var(--border)] bg-[var(--surface)]/90 backdrop-blur-md shrink-0">
-        <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3 min-w-0">
-          {/* Logo & Brand */}
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 shrink-0">
-            <div className="h-9 w-9 rounded-[var(--radius-sm)] bg-[var(--accent)] text-[var(--accent-foreground)] flex items-center justify-center font-bold text-sm tracking-wider shrink-0 shadow-sm">
-              SN
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-sm sm:text-base font-semibold leading-tight tracking-tight text-[var(--text-primary)] truncate">
+        <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4 min-w-0">
+          {/* Logo & Brand: Nunca quebra em telas menores */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <img
+              src="/assets/imagemlogo/logo_synapsenotes.png"
+              alt="SynapseNotes Logo"
+              className="h-8 sm:h-9 w-auto max-h-9 object-contain shrink-0 drop-shadow-[0_2px_8px_rgba(249,115,22,0.25)]"
+            />
+            <div className="shrink-0 flex flex-col justify-center">
+              <h1 className="text-sm sm:text-base font-bold leading-none tracking-tight text-[var(--text-primary)] whitespace-nowrap select-none">
                 SynapseNotes
               </h1>
-              <p className="text-[11px] text-[var(--text-muted)] truncate hidden sm:block">
+              <p className="text-[10px] sm:text-[11px] text-[var(--text-muted)] whitespace-nowrap hidden sm:block mt-0.5">
                 Segundo Cérebro Inteligente
               </p>
             </div>
           </div>
 
-          {/* Navigation Tabs (Desktop & Tablet) */}
-          <nav className="hidden md:flex items-center gap-1 min-w-0">
+          {/* Navigation Tabs (Notebook & Desktop) */}
+          <nav className="hidden lg:flex items-center gap-1.5 shrink-0" aria-label="Navegação Principal">
             <button
               onClick={() => setActiveTab('notes')}
-              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'notes'
-                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)] shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]/50'
               }`}
             >
-              Notas & Pensamentos ({notes.length})
+              <span className="hidden xl:inline">Notas & Pensamentos</span>
+              <span className="xl:hidden">Notas</span> ({notes.length})
             </button>
             <button
               onClick={() => setActiveTab('tasks')}
-              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'tasks'
-                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)] shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]/50'
               }`}
             >
-              Tarefas Extraídas ({tasks.filter((t) => !t.isCompleted).length})
+              <span className="hidden xl:inline">Tarefas Extraídas</span>
+              <span className="xl:hidden">Tarefas</span> ({tasks.filter((t) => !t.isCompleted).length})
             </button>
             <button
               onClick={() => setActiveTab('relations')}
-              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'relations'
-                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)] shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]/50'
               }`}
             >
-              Sinapses & Conexões
+              <span className="hidden xl:inline">Sinapses & Conexões</span>
+              <span className="xl:hidden">Sinapses</span>
             </button>
           </nav>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Action Buttons & Admin Controls */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Admin Badge: visible on large desktop */}
+            <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] text-xs text-[var(--text-secondary)] shrink-0">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="font-semibold text-[var(--text-primary)]">Admin</span>
+              <span className="text-[var(--text-muted)] text-[11px] truncate max-w-[130px]">admin@synapsenotes.com</span>
+            </div>
+
+            {/* Botão de Instalação PWA */}
+            <PWAInstallButton />
+
+            {/* Botão de retorno à Landing Page */}
+            <button
+              type="button"
+              onClick={handleBackToLanding}
+              className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] font-medium px-2.5 py-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] hover:border-[var(--border)] bg-[var(--surface-subtle)]/60 hover:bg-[var(--surface-hover)] transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-2xs"
+              title="Voltar para a página de apresentação"
+            >
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden sm:inline">Landing Page</span>
+            </button>
+
             <Button
               variant="outline"
               size="sm"
               onClick={() => setIsAudioModalOpen(true)}
-              className="text-xs gap-1.5 px-2.5 sm:px-3 h-8 shrink-0 text-[var(--accent)] border-[var(--accent)]/30 hover:bg-[var(--accent-subtle)]"
+              className="text-xs gap-1.5 px-2.5 sm:px-3 h-8 shrink-0 text-[var(--accent)] border-[var(--accent)]/30 hover:bg-[var(--accent-subtle)] whitespace-nowrap"
               title="Gravar Áudio com transcrição IA"
             >
               <Mic className="h-3.5 w-3.5 shrink-0" />
@@ -759,10 +892,11 @@ export default function App() {
             <Button
               size="sm"
               onClick={() => setIsNewNoteModalOpen(true)}
-              className="text-xs gap-1.5 px-2.5 sm:px-3 h-8 shrink-0 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white"
+              className="text-xs gap-1.5 px-2.5 sm:px-3 h-8 shrink-0 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white whitespace-nowrap"
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
-              <span>Nova Nota</span>
+              <span className="hidden sm:inline">Nova Nota</span>
+              <span className="sm:hidden">Nota</span>
             </Button>
 
             <Button
@@ -777,37 +911,37 @@ export default function App() {
           </div>
         </div>
 
-        {/* Mobile Sub-Navigation Bar */}
-        <div className="md:hidden flex items-center border-t border-[var(--border-subtle)] px-3 py-1.5 overflow-x-auto gap-2 bg-[var(--surface-subtle)]">
+        {/* Mobile & Tablet Sub-Navigation Bar (< 1024px) */}
+        <div className="lg:hidden flex items-center border-t border-[var(--border-subtle)] px-3 sm:px-6 py-2 overflow-x-auto gap-2 bg-[var(--surface-subtle)]/90 backdrop-blur-xs scrollbar-none">
           <button
             onClick={() => setActiveTab('notes')}
-            className={`px-2.5 py-1 text-xs whitespace-nowrap rounded-[var(--radius-xs)] font-medium ${
+            className={`px-3 py-1.5 text-xs whitespace-nowrap rounded-[var(--radius-sm)] font-medium transition-colors shrink-0 ${
               activeTab === 'notes'
-                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                : 'text-[var(--text-secondary)]'
+                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs border border-[var(--border)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
             Notas ({notes.length})
           </button>
           <button
             onClick={() => setActiveTab('tasks')}
-            className={`px-2.5 py-1 text-xs whitespace-nowrap rounded-[var(--radius-xs)] font-medium ${
+            className={`px-3 py-1.5 text-xs whitespace-nowrap rounded-[var(--radius-sm)] font-medium transition-colors shrink-0 ${
               activeTab === 'tasks'
-                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                : 'text-[var(--text-secondary)]'
+                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs border border-[var(--border)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
             Tarefas ({tasks.filter((t) => !t.isCompleted).length})
           </button>
           <button
             onClick={() => setActiveTab('relations')}
-            className={`px-2.5 py-1 text-xs whitespace-nowrap rounded-[var(--radius-xs)] font-medium ${
+            className={`px-3 py-1.5 text-xs whitespace-nowrap rounded-[var(--radius-sm)] font-medium transition-colors shrink-0 ${
               activeTab === 'relations'
-                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                : 'text-[var(--text-secondary)]'
+                ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs border border-[var(--border)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            Conexões
+            Sinapses & Conexões
           </button>
         </div>
       </header>
@@ -819,29 +953,42 @@ export default function App() {
         {/* ========================================================================= */}
         {activeTab === 'notes' && (
           <section className="space-y-6 w-full min-w-0">
+            {/* Card de Métricas Gerais das Notas */}
+            <NotesStatsCard
+              notes={notes}
+              tags={tags}
+              selectedSourceType={selectedSourceType}
+              onSelectSourceType={setSelectedSourceType}
+            />
+
             {/* Search, Filter Bar and Tags Chips */}
             <div className="flex flex-col gap-3 w-full min-w-0 bg-[var(--surface)] p-3 sm:p-4 rounded-[var(--radius-md)] border border-[var(--border)] shadow-[var(--shadow-subtle)]">
-              {/* Row 1: Search and Type Selectors */}
+              {/* Row 1: Search, Date Range Filter and Type Selectors */}
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full min-w-0">
-                <div className="relative flex-1 min-w-0">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)] pointer-events-none" />
-                  <Input
-                    type="search"
-                    placeholder="Buscar em títulos, conteúdos e sínteses da IA..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 pr-8 h-9 text-xs w-full min-w-0 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-decoration]:hidden"
-                  />
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      aria-label="Limpar busca"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)] pointer-events-none" />
+                    <Input
+                      type="search"
+                      placeholder="Buscar em títulos, conteúdos e sínteses da IA..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-9 pr-8 h-9 text-xs w-full min-w-0 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-decoration]:hidden"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        aria-label="Limpar busca"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Seletor de Intervalo de Datas */}
+                  <DateRangeFilter value={dateRange} onChange={setDateRange} />
                 </div>
 
                 <div className="flex items-center gap-1.5 overflow-x-auto shrink-0 pb-1 sm:pb-0">
@@ -884,6 +1031,19 @@ export default function App() {
                     }`}
                   >
                     <ExternalLink className="h-3 w-3" /> Links
+                  </button>
+
+                  <div className="h-4 w-[1px] bg-[var(--border)] mx-1 hidden sm:block shrink-0" />
+
+                  {/* Botão Importar Notas */}
+                  <button
+                    type="button"
+                    onClick={() => setIsImportModalOpen(true)}
+                    className="px-2.5 py-1 rounded-[var(--radius-xs)] text-xs font-medium whitespace-nowrap transition-colors flex items-center gap-1.5 bg-[var(--surface-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] border border-[var(--border)] shrink-0 cursor-pointer shadow-2xs"
+                    title="Importar notas a partir de TXT, CSV ou Áudio (MP3/M4A/WebM)"
+                  >
+                    <Upload className="h-3 w-3 text-[var(--accent)]" />
+                    <span>Importar</span>
                   </button>
                 </div>
               </div>
@@ -938,17 +1098,35 @@ export default function App() {
               <EmptyState
                 title="Nenhuma nota encontrada"
                 description={
-                  searchQuery || selectedTags.size > 0 || selectedSourceType
-                    ? 'Tente ajustar os filtros ou o termo de busca para encontrar suas notas.'
+                  searchQuery || selectedTags.size > 0 || selectedSourceType || dateRange.startDate || dateRange.endDate
+                    ? 'Nenhuma nota corresponde aos filtros, termo de busca ou período de data selecionados.'
                     : 'Você ainda não registrou pensamentos. Crie sua primeira nota ou grave um áudio para a IA analisar!'
                 }
                 action={
                   <div className="flex flex-wrap gap-2 justify-center">
+                    {(searchQuery || selectedTags.size > 0 || selectedSourceType || dateRange.startDate || dateRange.endDate) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setSearchQuery('');
+                          setSelectedTags(new Set());
+                          setSelectedSourceType(null);
+                          setDateRange({ startDate: null, endDate: null });
+                        }}
+                        className="text-xs"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5 mr-1" /> Limpar Filtros
+                      </Button>
+                    )}
                     <Button size="sm" onClick={() => setIsNewNoteModalOpen(true)}>
-                      <Plus className="h-3.5 w-3.5 mr-1" /> Criar Primeira Nota
+                      <Plus className="h-3.5 w-3.5 mr-1" /> Criar Nota
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => setIsAudioModalOpen(true)}>
                       <Mic className="h-3.5 w-3.5 mr-1 text-[var(--accent)]" /> Gravar Voz
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setIsImportModalOpen(true)}>
+                      <Upload className="h-3.5 w-3.5 mr-1 text-[var(--accent)]" /> Importar Arquivo
                     </Button>
                   </div>
                 }
@@ -1041,7 +1219,7 @@ export default function App() {
                                   className="inline-flex items-center gap-1 text-[10px] text-[var(--accent)] bg-[var(--accent-subtle)] px-1.5 py-0.5 rounded-[var(--radius-xs)] font-medium shrink-0 animate-pulse"
                                   title="A inteligência artificial está analisando esta nota em segundo plano"
                                 >
-                                  <Sparkles className="h-2.5 w-2.5" /> IA analisando...
+                                  <Brain className="h-2.5 w-2.5" /> IA analisando...
                                 </span>
                               ) : note.tasksCount > 0 ? (
                                 <span
@@ -1258,75 +1436,92 @@ export default function App() {
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {focusTodayTasks.map((task) => {
-                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
-                      return (
-                        <div
-                          key={task.id}
-                          onClick={() => handleToggleSelectTask(task.id)}
-                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
-                            isSelected
-                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
-                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSelectTask(task.id);
-                            }}
-                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
-                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                    <AnimatePresence mode="popLayout">
+                      {focusTodayTasks.map((task) => {
+                        const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                        return (
+                          <motion.div
+                            key={task.id}
+                            layout
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.85, x: 25, transition: { duration: 0.28 } }}
+                            transition={{ duration: 0.2 }}
+                            onClick={() => handleToggleSelectTask(task.id)}
+                            className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                              isSelected
+                                ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                                : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                            }`}
                           >
-                            {isSelected ? (
-                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
-                            ) : (
-                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
-                            )}
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs break-words leading-tight text-[var(--text-primary)] font-medium">
-                              {task.content}
-                            </p>
-                            {task.noteTitle && (
-                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                                <span className="truncate">Ref: {task.noteTitle}</span>
-                                {(() => {
-                                  const parentNote = notes.find((n) => n.id === task.noteId);
-                                  const taskUrl = getNoteLink(parentNote);
-                                  if (!taskUrl) return null;
-                                  return (
-                                    <a
-                                      href={taskUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                    >
-                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                      <span>Ver artigo</span>
-                                    </a>
-                                  );
-                                })()}
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTask(task.id);
-                            }}
-                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                            title="Excluir tarefa"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSelectTask(task.id);
+                              }}
+                              className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                              title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                            >
+                              {isSelected ? (
+                                <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                              ) : (
+                                <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                              )}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs break-words leading-tight text-[var(--text-primary)] font-medium">
+                                {task.content}
+                              </p>
+                              {task.noteTitle && (
+                                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                  <span className="truncate">Ref: {task.noteTitle}</span>
+                                  {(() => {
+                                    const parentNote = notes.find((n) => n.id === task.noteId);
+                                    const taskUrl = getNoteLink(parentNote);
+                                    if (!taskUrl) return null;
+                                    return (
+                                      <a
+                                        href={taskUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                        title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                      >
+                                        <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                        <span>Ver artigo</span>
+                                      </a>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => handleQuickCompleteTask(task, e)}
+                                className="text-[var(--text-muted)] hover:text-emerald-500 hover:bg-emerald-500/10 rounded p-1 transition-all cursor-pointer"
+                                title="Concluir tarefa agora"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteTask(task.id);
+                                }}
+                                className="text-[var(--text-muted)] hover:text-[var(--error)] p-1 rounded transition-colors cursor-pointer"
+                                title="Excluir tarefa"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -1348,92 +1543,109 @@ export default function App() {
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {upcomingTasks.map((task) => {
-                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
-                      return (
-                        <div
-                          key={task.id}
-                          onClick={() => handleToggleSelectTask(task.id)}
-                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
-                            isSelected
-                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
-                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSelectTask(task.id);
-                            }}
-                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
-                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                    <AnimatePresence mode="popLayout">
+                      {upcomingTasks.map((task) => {
+                        const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                        return (
+                          <motion.div
+                            key={task.id}
+                            layout
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.85, x: 25, transition: { duration: 0.28 } }}
+                            transition={{ duration: 0.2 }}
+                            onClick={() => handleToggleSelectTask(task.id)}
+                            className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                              isSelected
+                                ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                                : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                            }`}
                           >
-                            {isSelected ? (
-                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
-                            ) : (
-                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
-                            )}
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
-                              {task.content}
-                            </p>
-                            {task.noteTitle && (
-                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                                <span className="truncate">Ref: {task.noteTitle}</span>
-                                {(() => {
-                                  const parentNote = notes.find((n) => n.id === task.noteId);
-                                  const taskUrl = getNoteLink(parentNote);
-                                  if (!taskUrl) return null;
-                                  return (
-                                    <a
-                                      href={taskUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                    >
-                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                      <span>Ver artigo</span>
-                                    </a>
-                                  );
-                                })()}
-                              </div>
-                            )}
-                            {task.isSuggested && (
-                              <div className="flex items-center gap-1.5 mt-1.5">
-                                <span className="text-[9px] bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 px-1 py-0.2 rounded font-medium">
-                                  Sugestão IA
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleApproveTask(task);
-                                  }}
-                                  className="text-[10px] text-[var(--accent)] hover:underline font-medium"
-                                >
-                                  Confirmar
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTask(task.id);
-                            }}
-                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                            title="Excluir tarefa"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSelectTask(task.id);
+                              }}
+                              className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                              title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                            >
+                              {isSelected ? (
+                                <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                              ) : (
+                                <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                              )}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
+                                {task.content}
+                              </p>
+                              {task.noteTitle && (
+                                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                  <span className="truncate">Ref: {task.noteTitle}</span>
+                                  {(() => {
+                                    const parentNote = notes.find((n) => n.id === task.noteId);
+                                    const taskUrl = getNoteLink(parentNote);
+                                    if (!taskUrl) return null;
+                                    return (
+                                      <a
+                                        href={taskUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                        title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                      >
+                                        <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                        <span>Ver artigo</span>
+                                      </a>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+                              {task.isSuggested && (
+                                <div className="flex items-center gap-1.5 mt-1.5">
+                                  <span className="text-[9px] bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 px-1 py-0.2 rounded font-medium">
+                                    Sugestão IA
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleApproveTask(task);
+                                    }}
+                                    className="text-[10px] text-[var(--accent)] hover:underline font-medium"
+                                  >
+                                    Confirmar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => handleQuickCompleteTask(task, e)}
+                                className="text-[var(--text-muted)] hover:text-emerald-500 hover:bg-emerald-500/10 rounded p-1 transition-all cursor-pointer"
+                                title="Concluir tarefa agora"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteTask(task.id);
+                                }}
+                                className="text-[var(--text-muted)] hover:text-[var(--error)] p-1 rounded transition-colors cursor-pointer"
+                                title="Excluir tarefa"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -1455,75 +1667,92 @@ export default function App() {
                   </p>
                 ) : (
                   <div className="space-y-2 min-w-0">
-                    {somedayTasks.map((task) => {
-                      const isSelected = selectedTaskIdsForCompletion.has(task.id);
-                      return (
-                        <div
-                          key={task.id}
-                          onClick={() => handleToggleSelectTask(task.id)}
-                          className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
-                            isSelected
-                              ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
-                              : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSelectTask(task.id);
-                            }}
-                            className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
-                            title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                    <AnimatePresence mode="popLayout">
+                      {somedayTasks.map((task) => {
+                        const isSelected = selectedTaskIdsForCompletion.has(task.id);
+                        return (
+                          <motion.div
+                            key={task.id}
+                            layout
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.85, x: 25, transition: { duration: 0.28 } }}
+                            transition={{ duration: 0.2 }}
+                            onClick={() => handleToggleSelectTask(task.id)}
+                            className={`p-2.5 rounded-[var(--radius-sm)] border shadow-xs transition-all flex items-start gap-2.5 min-w-0 cursor-pointer ${
+                              isSelected
+                                ? 'border-[rgba(249,115,22,0.4)] dark:border-[rgba(249,115,22,0.45)] bg-[rgba(249,115,22,0.08)] dark:bg-[rgba(249,115,22,0.12)] shadow-xs ring-1 ring-[rgba(249,115,22,0.2)]'
+                                : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]'
+                            }`}
                           >
-                            {isSelected ? (
-                              <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
-                            ) : (
-                              <Square className="h-4 w-4 text-[var(--text-muted)]" />
-                            )}
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
-                              {task.content}
-                            </p>
-                            {task.noteTitle && (
-                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
-                                <span className="truncate">Ref: {task.noteTitle}</span>
-                                {(() => {
-                                  const parentNote = notes.find((n) => n.id === task.noteId);
-                                  const taskUrl = getNoteLink(parentNote);
-                                  if (!taskUrl) return null;
-                                  return (
-                                    <a
-                                      href={taskUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
-                                      title={`Acessar artigo ou estudo: ${taskUrl}`}
-                                    >
-                                      <ExternalLink className="h-2.5 w-2.5 shrink-0" />
-                                      <span>Ver artigo</span>
-                                    </a>
-                                  );
-                                })()}
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTask(task.id);
-                            }}
-                            className="text-[var(--text-muted)] hover:text-[var(--error)] shrink-0 p-1"
-                            title="Excluir tarefa"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSelectTask(task.id);
+                              }}
+                              className="mt-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] shrink-0 transition-colors cursor-pointer"
+                              title={isSelected ? 'Desmarcar seleção' : 'Marcar para concluir'}
+                            >
+                              {isSelected ? (
+                                <CheckSquare className="h-4 w-4 text-[var(--accent)]" />
+                              ) : (
+                                <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                              )}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs break-words leading-tight text-[var(--text-primary)]">
+                                {task.content}
+                              </p>
+                              {task.noteTitle && (
+                                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[var(--text-muted)] mt-1">
+                                  <span className="truncate">Ref: {task.noteTitle}</span>
+                                  {(() => {
+                                    const parentNote = notes.find((n) => n.id === task.noteId);
+                                    const taskUrl = getNoteLink(parentNote);
+                                    if (!taskUrl) return null;
+                                    return (
+                                      <a
+                                        href={taskUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline font-medium"
+                                        title={`Acessar artigo ou estudo: ${taskUrl}`}
+                                      >
+                                        <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                        <span>Ver artigo</span>
+                                      </a>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => handleQuickCompleteTask(task, e)}
+                                className="text-[var(--text-muted)] hover:text-emerald-500 hover:bg-emerald-500/10 rounded p-1 transition-all cursor-pointer"
+                                title="Concluir tarefa agora"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteTask(task.id);
+                                }}
+                                className="text-[var(--text-muted)] hover:text-[var(--error)] p-1 rounded transition-colors cursor-pointer"
+                                title="Excluir tarefa"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -1582,7 +1811,19 @@ export default function App() {
                     </button>
                   </div>
 
-                  <span className="text-xs text-[var(--text-muted)] hidden lg:flex items-center gap-1 font-sans">
+                  {/* Botão de Exportação CSV com Data e Hora */}
+                  <button
+                    type="button"
+                    onClick={handleExportCompletedTasksCSV}
+                    disabled={tasks.filter((t) => t.isCompleted).length === 0}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-xs)] text-xs font-sans font-medium transition-all bg-[var(--surface-subtle)] text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] border border-[var(--border)] hover:border-[var(--accent)]/50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shadow-2xs whitespace-nowrap"
+                    title="Exportar histórico de tarefas concluídas em arquivo CSV com data e hora exata"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Exportar CSV</span>
+                  </button>
+
+                  <span className="text-xs text-[var(--text-muted)] hidden xl:flex items-center gap-1 font-sans">
                     <Clock className="h-3 w-3 text-[var(--accent)]" /> Histórico temporal
                   </span>
                 </div>
@@ -1853,7 +2094,7 @@ export default function App() {
           setIsAudioModalOpen(false);
         }}
         title="Gravação de Voz & Transcrição IA"
-        description="Fale seus pensamentos. O microfone captura o áudio e o Gemini transcreve, sintetiza e extrai tarefas."
+        description="Fale seus pensamentos. O microfone captura o áudio e a IA transcreve, sintetiza e extrai tarefas."
         maxWidth="lg"
       >
         <div className="space-y-4 min-w-0">
@@ -2052,7 +2293,7 @@ export default function App() {
                       </>
                     ) : (
                       <>
-                        <Sparkles className="h-3.5 w-3.5" /> Concluir e Salvar
+                        <Check className="h-3.5 w-3.5" /> Concluir e Salvar
                       </>
                     )}
                   </Button>
@@ -2088,7 +2329,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <Sparkles className="h-3.5 w-3.5" /> Salvar & Transcrever com IA
+                    <Brain className="h-3.5 w-3.5" /> Salvar & Transcrever com IA
                   </>
                 )}
               </Button>
@@ -2108,6 +2349,16 @@ export default function App() {
             isOpen={Boolean(selectedNote)}
             onClose={() => setSelectedNote(null)}
             title={isEditingNote ? 'Editar Nota' : cleanNoteTitle(selectedNote.title)}
+            headerAction={
+              !isEditingNote ? (
+                <NoteExportDropdown
+                  note={selectedNote}
+                  relations={noteRelations}
+                  onSuccess={(msg) => showToast(msg)}
+                  onError={(err) => showToast(err)}
+                />
+              ) : undefined
+            }
             description={
               <div className="space-y-1.5 min-w-0">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">
@@ -2193,7 +2444,7 @@ export default function App() {
                   />
                 </FormField>
 
-                {(selectedNote.sourceType === 'link' || selectedNote.sourceUrl) && (
+                {selectedNote.sourceType === 'link' && (
                   <FormField
                     label="URL do Artigo ou Estudo"
                     helperText="Link original da publicação científica, artigo ou estudo indexado."
@@ -2343,11 +2594,20 @@ export default function App() {
               </div>
             ) : (
               <>
+                {/* Player Seguro de Áudio Nativo via Blob URL */}
+                {(selectedNote.hasAudio || selectedNote.sourceType === 'audio') && (
+                  <SecureAudioPlayer
+                    noteId={selectedNote.id}
+                    sourceUrl={selectedNote.sourceUrl}
+                    durationSeconds={selectedNote.mediaDurationSeconds}
+                  />
+                )}
+
                 {/* AI Summary Box - Primeiro bloco de conteúdo em destaque */}
                 {selectedNote.summary && (
                   <div className="p-3.5 sm:p-4 rounded-[var(--radius-sm)] bg-[var(--surface-hover)] border border-[var(--border)] space-y-2">
                     <h4 className="text-xs font-semibold text-[var(--accent)] uppercase tracking-wider flex items-center gap-1.5">
-                      <Sparkles className="h-3.5 w-3.5 shrink-0" /> Síntese Gerada pela IA
+                      <Brain className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" /> Síntese Gerada pela IA
                     </h4>
                     <p className="text-xs sm:text-sm font-normal text-stone-900 dark:text-stone-200 leading-relaxed break-words">
                       "{selectedNote.summary}"
@@ -2442,11 +2702,58 @@ export default function App() {
         );
       })()}
 
+      {/* MODAL 4: IMPORTAR NOTAS (TXT, CSV, ÁUDIO) */}
+      <ImportNotesModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onSuccess={(msg) => showToast(msg)}
+        onRefreshData={loadData}
+        onNoteImported={(newNote) => setNotes((prev) => [newNote, ...prev])}
+      />
+
+      {/* Animação comemorativa e feedback de conclusão com Framer Motion */}
+      <TaskConfetti triggerKey={confettiTrigger} taskCount={confettiTaskCount} />
+
       {/* FOOTER */}
       <footer className="border-t border-[var(--border)] bg-[var(--surface)] py-4 text-center text-xs text-[var(--text-muted)] shrink-0">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>© {new Date().getFullYear()} SynapseNotes — Segundo Cérebro com Inteligência Artificial</p>
-          <p className="font-sans font-medium text-[11px]">Desenvolvido com Gemini & Express</p>
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <img
+              src="/assets/imagemlogo/logo_synapsenotes.png"
+              alt="SynapseNotes Logo"
+              className="h-7 sm:h-8 w-auto max-h-8 object-contain shrink-0 drop-shadow-[0_1px_4px_rgba(249,115,22,0.2)]"
+            />
+            <p className="whitespace-nowrap font-medium text-[var(--text-secondary)]">
+              <span className="font-semibold text-[var(--text-primary)] whitespace-nowrap">SynapseNotes</span> © {new Date().getFullYear()}
+            </p>
+          </div>
+          <div className="font-sans font-medium text-[11px] text-[var(--text-secondary)] px-3.5 py-1.5 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] inline-flex flex-wrap items-center justify-center gap-2 shadow-2xs transition-all">
+            <span>Desenvolvido por <strong className="font-semibold text-[var(--text-primary)]">Kauã Brandão</strong></span>
+            <span className="opacity-40 hidden sm:inline">•</span>
+            <span className="inline-flex items-center gap-3">
+              <a
+                href="https://github.com/Kauabrandaorocha"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors font-medium hover:underline"
+                title="Acessar perfil no GitHub"
+              >
+                <Github className="h-3.5 w-3.5 shrink-0" />
+                <span>GitHub</span>
+              </a>
+              <span className="opacity-40">•</span>
+              <a
+                href="https://linkedin.com/in/kauabrandao18"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors font-medium hover:underline"
+                title="Acessar perfil no LinkedIn"
+              >
+                <Linkedin className="h-3.5 w-3.5 shrink-0" />
+                <span>LinkedIn</span>
+              </a>
+            </span>
+          </div>
         </div>
       </footer>
     </div>

@@ -11,6 +11,7 @@ export interface ModalProps {
   children: React.ReactNode;
   footer?: React.ReactNode;
   maxWidth?: 'sm' | 'default' | 'lg' | 'xl';
+  headerAction?: React.ReactNode;
 }
 
 export function Modal({
@@ -21,6 +22,7 @@ export function Modal({
   children,
   footer,
   maxWidth = 'default',
+  headerAction,
 }: ModalProps) {
   const titleId = React.useId();
   const descId = React.useId();
@@ -84,15 +86,18 @@ export function Modal({
               </div>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            aria-label="Fechar modal"
-            className="h-8 w-8 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {headerAction}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              aria-label="Fechar modal"
+              className="h-8 w-8 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         {/* Body com Scroll Suave */}

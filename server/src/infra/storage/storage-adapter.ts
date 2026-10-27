@@ -55,9 +55,27 @@ export class StorageAdapter {
     };
   }
 
+  public getLocalDir(): string {
+    return this.localDir;
+  }
+
+  public getFilePath(key: string): string | null {
+    if (!key || typeof key !== 'string' || key.includes('..') || key.includes('/') || key.includes('\\')) {
+      return null;
+    }
+    const resolved = path.resolve(this.localDir, key);
+    if (!resolved.startsWith(this.localDir)) {
+      return null;
+    }
+    if (!fs.existsSync(resolved)) {
+      return null;
+    }
+    return resolved;
+  }
+
   public async delete(key: string): Promise<boolean> {
-    const filePath = path.join(this.localDir, key);
-    if (fs.existsSync(filePath)) {
+    const filePath = this.getFilePath(key);
+    if (filePath) {
       await fs.promises.unlink(filePath);
       return true;
     }

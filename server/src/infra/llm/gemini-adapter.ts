@@ -37,13 +37,65 @@ export class GeminiAdapter {
     }
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs = 20000): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) =>
-        setTimeout(() => reject(new Error('TIMEOUT_GEMINI_API')), timeoutMs),
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs = 35000): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('TIMEOUT_GEMINI_API')), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async generateWithFallback(
+    params: {
+      contents: any;
+      config?: any;
+    },
+    preferredModel?: string,
+    timeoutMs = 35000,
+  ): Promise<any> {
+    if (!this.ai) {
+      throw new Error('NO_AI_CLIENT');
+    }
+
+    const modelsToTry = Array.from(
+      new Set(
+        [
+          preferredModel,
+          process.env.GEMINI_MODEL,
+          'gemini-3.8-flash',
+          'gemini-3.1-flash-lite',
+          'gemini-flash-latest',
+        ].filter(Boolean) as string[],
       ),
-    ]);
+    );
+
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      try {
+        const response = await this.withTimeout(
+          this.ai.models.generateContent({
+            model,
+            contents: params.contents,
+            config: params.config,
+          }),
+          timeoutMs,
+        );
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || err);
+        console.warn(`[GeminiAdapter] Tentativa com modelo ${model} falhou: ${msg.slice(0, 100)}. Tentando modelo alternativo...`);
+      }
+    }
+
+    throw lastError || new Error('ALL_GEMINI_MODELS_FAILED');
   }
 
   public async analyzeTextNote(title: string, content: string): Promise<NoteAnalysis> {
@@ -78,17 +130,13 @@ Conteúdo:
 ${content}
 </untrusted_input>`;
 
-      const response = await this.withTimeout(
-        this.ai.models.generateContent({
-          model: 'gemini-flash-latest',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
-        }),
-        15000,
-      );
+      const response = await this.generateWithFallback({
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+        },
+      });
 
       const text = response.text || '{}';
       const parsed = JSON.parse(text);
@@ -148,17 +196,13 @@ Se encontrar correlação relevante (similarityScore >= 0.70), retorne uma lista
 Se não houver correlação forte, retorne {"correlations": []}.
 Retorne estritamente JSON.`;
 
-      const response = await this.withTimeout(
-        this.ai.models.generateContent({
-          model: 'gemini-flash-latest',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
-        }),
-        15000,
-      );
+      const response = await this.generateWithFallback({
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+        },
+      });
 
       const parsed = JSON.parse(response.text || '{}');
       return Array.isArray(parsed.correlations) ? parsed.correlations : [];

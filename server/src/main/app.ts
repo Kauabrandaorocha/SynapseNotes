@@ -1,4 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
+import cookieParser from 'cookie-parser';
 import { requestIdMiddleware } from '../shared/middlewares/request-id.middleware.ts';
 import { createSecurityHeadersMiddleware } from '../shared/middlewares/security-headers.middleware.ts';
 import { createCorsMiddleware } from '../shared/middlewares/cors.middleware.ts';
@@ -28,6 +29,7 @@ export function createExpressApp(options: AppOptions = {}): Express {
   app.use(requestIdMiddleware);
   app.use(createSecurityHeadersMiddleware());
   app.use(createCorsMiddleware());
+  app.use(cookieParser());
 
   if (enableRateLimiting) {
     app.use(globalRateLimiter.middleware());
